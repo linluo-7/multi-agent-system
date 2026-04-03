@@ -20,6 +20,8 @@ from .prompts import (
 class SupervisorState(dict):
     """Supervisor状态定义"""
     user_input: str
+    task_id: str
+    conversation_id: str
     plan: List[Dict]
     tasks: Dict[str, Dict]
     results: Dict[str, Any]
@@ -58,8 +60,8 @@ class SupervisorAgent:
         workflow.add_edge("monitor", "integrate")
         workflow.add_edge("integrate", END)
         
-        # 编译
-        return workflow.compile(checkpointer=MemorySaver())
+        # 编译（暂时不使用checkpointer，避免状态丢失问题）
+        return workflow.compile()
     
     async def _analyze_task(self, state: SupervisorState) -> SupervisorState:
         """分析用户需求，制定执行计划"""
@@ -75,16 +77,16 @@ class SupervisorAgent:
         # 使用LLM分析任务（这里用简单的规则匹配作为演示）
         plan = await self._create_plan(user_input)
         
-        # 保存计划到PostgreSQL
-        task_id = state.get('task_id')
-        if task_id:
-            self.storage.save_agent_message(
-                from_agent='supervisor',
-                to_agent='system',
-                message_type='plan',
-                payload={'plan': plan},
-                parent_task_id=task_id
-            )
+        # 注意：暂时注释掉，因为任务还没创建，外键约束会失败
+        # task_id = state.get('task_id')
+        # if task_id:
+        #     self.storage.save_agent_message(
+        #         from_agent='supervisor',
+        #         to_agent='system',
+        #         message_type='plan',
+        #         payload={'plan': plan},
+        #         parent_task_id=task_id
+        #     )
         
         return {**state, "plan": plan}
     
@@ -191,11 +193,12 @@ class SupervisorAgent:
             agent = item['agent']
             task_def = item['task']
             
-            # 创建任务记录
+            # 创建任务记录，使用state中的task_id
             db_task_id = self.storage.create_task(
                 conversation_id=state.get('conversation_id', ''),
                 task_type=task_def.get('type', 'unknown'),
-                payload=task_def
+                payload=task_def,
+                task_id=state.get('task_id')  # 传入原始task_id
             )
             
             tasks[item['task_id']] = {

@@ -109,9 +109,21 @@ class PostgresStorage:
     
     # ========== Task 操作 ==========
     
-    def create_task(self, conversation_id: str, task_type: str, payload: dict) -> str:
+    def create_task(self, conversation_id: str, task_type: str, payload: dict, task_id: str = None) -> str:
         """创建新任务"""
-        task_id = str(uuid.uuid4())
+        # 如果没有提供task_id，则生成一个新的
+        if task_id is None:
+            task_id = str(uuid.uuid4())
+        
+        # 验证task_id是有效的UUID格式
+        try:
+            uuid.UUID(task_id)
+        except (ValueError, TypeError):
+            task_id = str(uuid.uuid4())
+        
+        # 如果conversation_id为空，使用系统默认对话ID
+        if not conversation_id:
+            conversation_id = '00000000-0000-0000-0000-000000000000'
         
         with self.cursor() as cur:
             cur.execute(
@@ -175,6 +187,13 @@ class PostgresStorage:
         parent_task_id: Optional[str] = None
     ) -> int:
         """保存Agent间消息"""
+        # 验证parent_task_id，如果是无效UUID则设为NULL
+        if parent_task_id:
+            try:
+                uuid.UUID(parent_task_id)
+            except (ValueError, TypeError):
+                parent_task_id = None  # 无效UUID，设为NULL
+        
         with self.cursor() as cur:
             cur.execute(
                 """

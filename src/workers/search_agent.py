@@ -3,9 +3,16 @@ Search Agent
 搜索Agent - 负责网络搜索和信息获取
 """
 
-import httpx
+import asyncio
 from typing import Dict, Any
 from .base import BaseWorker
+
+# Tavily API Client
+try:
+    from tavily import TavilyClient
+    TAVILY_AVAILABLE = True
+except ImportError:
+    TAVILY_AVAILABLE = False
 
 
 class SearchAgent(BaseWorker):
@@ -17,6 +24,18 @@ class SearchAgent(BaseWorker):
     def __init__(self, config: dict, redis_manager, postgres_storage):
         super().__init__(config, redis_manager, postgres_storage)
         self.max_results = config.get('max_results', 5)
+        self.tavily_client = None
+        
+        # 初始化 Tavily 客户端
+        if TAVILY_AVAILABLE:
+            tavily_config = config.get('tavily', {})
+            api_key = tavily_config.get('api_key')
+            if api_key:
+                try:
+                    self.tavily_client = TavilyClient(api_key=api_key)
+                    print(f"[SearchAgent] Tavily client initialized")
+                except Exception as e:
+                    print(f"[SearchAgent] Failed to initialize Tavily: {e}")
     
     async def execute(self, task: dict, context: dict) -> dict:
         """
@@ -45,45 +64,72 @@ class SearchAgent(BaseWorker):
             if k.startswith('search')
         ]
         
-        # 调用搜索API（这里用DuckDuckGo示例）
-        results = await self._search_duckduckgo(query)
+        # 如果已经搜索过相同查询，直接返回缓存结果
+        if query in previous_searches:
+            return {
+                'query': query,
+                'results': [],
+                'source': 'cache',
+                'count': 0,
+                'context_summary': '（使用缓存结果）'
+            }
+        
+        # 调用搜索API
+        if self.tavily_client:
+            results = await self._search_tavily(query)
+        else:
+            results = await self._mock_search_results(query)
         
         return {
             'query': query,
             'results': results,
-            'source': 'duckduckgo',
+            'source': 'tavily' if self.tavily_client else 'mock',
             'count': len(results),
             'context_summary': self._summarize_results(results)
         }
     
-    async def _search_duckduckgo(self, query: str) -> list:
+    async def _search_tavily(self, query: str) -> list:
         """
-        使用DuckDuckGo搜索
+        使用 Tavily AI 搜索
         
-        注意：生产环境建议使用 Tavily API 或 Google Custom Search API
-        这里用 httpx 简单封装，实际项目中可替换为付费/免费API
+        Tavily 是专为 LLM/AI 场景设计的搜索API，
+        返回结构化的搜索结果。
         """
         try:
-            # 使用公共搜索API（示例用serpapi或其他免费API）
-            # 这里暂时返回模拟数据，实际使用时替换为真实API
-            async with httpx.AsyncClient(timeout=10.0) as client:
-                # TODO: 替换为真实搜索API
-                # 示例: response = await client.get("https://api.search.com/search", params={"q": query})
-                
-                # 模拟返回
-                return await self._mock_search_results(query)
-                
+            # Tavily SDK 本身是同步的，需要在线程池中运行
+            loop = asyncio.get_event_loop()
+            
+            def sync_search():
+                response = self.tavily_client.search(
+                    query=query,
+                    search_depth=self.config.get('tavily', {}).get('search_depth', 'basic'),
+                    max_results=self.max_results
+                )
+                return response
+            
+            response = await loop.run_in_executor(None, sync_search)
+            
+            # 解析 Tavily 响应
+            results = []
+            for item in response.get('results', []):
+                results.append({
+                    'title': item.get('title', ''),
+                    'url': item.get('url', ''),
+                    'snippet': item.get('content', ''),
+                    'relevance': item.get('score', 0.0)
+                })
+            
+            print(f"[SearchAgent] Tavily search returned {len(results)} results for '{query}'")
+            return results
+            
         except Exception as e:
-            return [{
-                'title': f'搜索结果: {query}',
-                'url': '',
-                'snippet': f'搜索失败: {str(e)}',
-                'error': True
-            }]
+            print(f"[SearchAgent] Tavily search failed: {e}")
+            # 降级到 Mock
+            return await self._mock_search_results(query)
     
     async def _mock_search_results(self, query: str) -> list:
-        """模拟搜索结果（开发测试用）"""
-        await asyncio.sleep(0.05)  # 模拟网络延迟
+        """模拟搜索结果（开发测试用 / Tavily不可用时降级）"""
+        await asyncio.sleep(0.1)  # 模拟网络延迟
         
         return [
             {
@@ -118,6 +164,3 @@ class SearchAgent(BaseWorker):
             summary_parts.append(f"• {title}: {snippet}...")
         
         return '\n'.join(summary_parts)
-
-
-import asyncio  # 需要这个才能使用 asyncio.sleep

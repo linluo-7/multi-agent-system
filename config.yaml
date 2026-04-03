@@ -21,6 +21,10 @@ redis:
   db: 0
   password: ""
 
+tavily:
+  api_key: "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"
+  search_depth: "basic"
+
 storage:
   # Redis key前缀
   key_prefix: "mas"

@@ -101,10 +101,10 @@ class RedisManager:
         
         result = {}
         for key in keys:
-            # 提取agent名称
+            # 提取agent名称，key格式: prefix:agent:name:status
             parts = key.split(':')
             if len(parts) >= 3:
-                agent_name = parts[1]
+                agent_name = parts[2]  # parts[1]是固定的"agent"，实际名字在parts[2]
                 data = self.client.hgetall(key)
                 if data:
                     result[agent_name] = {k: json.loads(v) for k, v in data.items()}

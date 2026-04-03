@@ -70,6 +70,10 @@ async def lifespan(app: FastAPI):
         name = wc.get('name')
         worker_config = {**wc, **config.get('workers', {}).get(name, {})}
         
+        # 额外配置
+        if name == 'search':
+            worker_config['tavily'] = config.get('tavily', {})
+        
         if name == 'search':
             workers[name] = SearchAgent(worker_config, redis_manager, postgres_storage)
         elif name == 'code':
