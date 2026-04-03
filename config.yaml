@@ -25,6 +25,11 @@ tavily:
   api_key: "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"
   search_depth: "basic"
 
+minimax:
+  api_key: "sk-cp-KqelQLgE0ObsWZ0ZhEzFsBrknGwDaPD5ZCxWOJ8yubN5K6vtsqs1DR8f21mP2Iz4fVgGZcUZqMBHo4RQsdJG9j6CRXnrJD9zMJDlhFKPc5h0D9UaHzOicZw"
+  base_url: "https://api.minimaxi.com/anthropic"
+  model: "MiniMax-M2"
+
 storage:
   # Redis key前缀
   key_prefix: "mas"

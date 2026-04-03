@@ -15,6 +15,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from storage import get_storage, get_redis
 from workers import SearchAgent, CodeAgent, DocAgent
 from supervisor import SupervisorAgent
+from llm import get_llm
 from api import router, set_dependencies
 
 
@@ -62,6 +63,15 @@ async def lifespan(app: FastAPI):
     redis_manager = get_redis(config['redis'])
     print(f"✅ Redis 连接成功")
     
+    # 初始化 MiniMax LLM
+    llm_client = None
+    if config.get('minimax', {}).get('api_key'):
+        try:
+            llm_client = get_llm(config['minimax'])
+            print(f"✅ MiniMax LLM 初始化成功")
+        except Exception as e:
+            print(f"⚠️  MiniMax LLM 初始化失败: {e}")
+    
     # 初始化Workers
     workers_config = config.get('agents', {}).get('workers', [])
     workers = {}
@@ -93,7 +103,8 @@ async def lifespan(app: FastAPI):
         supervisor_config,
         workers,
         redis_manager,
-        postgres_storage
+        postgres_storage,
+        llm_client=llm_client
     )
     print(f"✅ Supervisor 初始化完成")
     

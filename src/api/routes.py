@@ -406,8 +406,29 @@ async def dashboard():
                 try {
                     const res = await fetch('/api/v1/agents/status');
                     const data = await res.json();
+                    renderSystemStatus(data.agents);
                     renderAgents(data.agents);
                 } catch (e) { console.error(e); }
+            }
+            
+            function renderSystemStatus(agents) {
+                const container = document.getElementById('system-status');
+                const total = agents.length;
+                const online = agents.filter(a => a.status === 'online' || a.status === 'busy').length;
+                container.innerHTML = `
+                    <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+                        <span>🤖 Agent总数</span><span>${total}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+                        <span>✅ 在线</span><span style="color:#4ade80">${online}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between;margin-bottom:8px">
+                        <span>⏱️ 离线</span><span style="color:#6b7280">${total - online}</span>
+                    </div>
+                    <div style="display:flex;justify-content:space-between">
+                        <span>📊 系统</span><span style="color:#4ade80">运行正常</span>
+                    </div>
+                `;
             }
             
             function renderAgents(agents) {

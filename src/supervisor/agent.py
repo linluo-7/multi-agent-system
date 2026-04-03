@@ -32,11 +32,12 @@ class SupervisorState(dict):
 class SupervisorAgent:
     """总控Agent"""
     
-    def __init__(self, config: dict, workers: Dict[str, Any], redis_manager, postgres_storage):
+    def __init__(self, config: dict, workers: Dict[str, Any], redis_manager, postgres_storage, llm_client=None):
         self.config = config
         self.workers = workers  # name -> worker instance
         self.redis = redis_manager
         self.storage = postgres_storage
+        self.llm = llm_client  # MiniMax LLM client
         
         # 构建LangGraph工作流
         self.graph = self._build_graph()
@@ -91,14 +92,75 @@ class SupervisorAgent:
         return {**state, "plan": plan}
     
     async def _create_plan(self, user_input: str) -> List[Dict]:
-        """创建执行计划"""
-        # 简单的规则匹配演示
-        # 生产环境中，这里应该调用LLM进行更智能的规划
+        """使用 LLM 智能创建执行计划"""
         
+        if self.llm:
+            # 使用 MiniMax LLM 进行智能规划
+            system_prompt = """你是一个多Agent协作系统的任务规划专家。
+            
+            可用的Agent:
+            - search: 网络搜索Agent，负责搜索和获取网络信息
+            - code: 代码编写Agent，负责编写和执行代码
+            - doc: 文档生成Agent，负责生成和处理文档
+            
+            用户的输入可能是中文或英文，或者是混合的。
+            
+            你的任务是根据用户需求，制定一个或多个Agent协作计划。
+            
+            输出格式（必须是有效的JSON数组）：
+            [
+              {
+                "agent": "agent_name",
+                "task_id": "task_0",
+                "task": {
+                  "type": "search"或"code"或"doc",
+                  "input": {...}  // 任务的输入参数
+                },
+                "depends_on": [],  // 依赖的任务索引（从0开始），无依赖则为空数组
+                "mode": "parallel"或"sequential"
+              }
+            ]
+            
+            规划原则：
+            1. 简单问题用1个Agent解决即可
+            2. 复杂问题可能需要多个Agent协作
+            3. 有依赖关系的任务必须串行（depends_on非空）
+            4. 独立任务可以并行执行（mode="parallel"）
+            5. search任务的input只需要query字段
+            6. code任务的input需要action字段（write/execute/modify）和相应参数
+            7. doc任务的input需要action字段（generate/summarize）和相应参数
+            
+            注意：你只能使用上述三种Agent类型，不要创建其他类型的任务。"""
+            
+            user_prompt = f"用户需求：{user_input}"
+            
+            try:
+                response = await self.llm.ainvoke([
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt}
+                ], temperature=0.3)
+                
+                import json
+                import re
+                
+                # 提取JSON
+                json_match = re.search(r'\[.*\]', response, re.DOTALL)
+                if json_match:
+                    plan = json.loads(json_match.group())
+                    print(f"[Supervisor] LLM planned {len(plan)} tasks")
+                    return plan
+                    
+            except Exception as e:
+                print(f"[Supervisor] LLM planning failed: {e}, falling back to rule-based")
+        
+        # Fallback: 使用规则匹配
+        return await self._create_plan_rule_based(user_input)
+    
+    async def _create_plan_rule_based(self, user_input: str) -> List[Dict]:
+        """基于规则的备用规划器"""
         user_lower = user_input.lower()
         plan = []
         
-        # 检测需要哪些Agent
         needs_search = any(kw in user_lower for kw in ['搜索', '查找', '查询', '了解', '知道', 'search', 'find', 'look up'])
         needs_code = any(kw in user_lower for kw in ['代码', '编程', '写程序', '执行', '运行', 'code', 'program', 'run', 'execute'])
         needs_doc = any(kw in user_lower for kw in ['文档', '报告', '生成', '导出', '写文章', 'doc', 'report', 'generate', 'write'])
@@ -131,11 +193,7 @@ class SupervisorAgent:
             task_id_counter += 1
         
         if needs_doc:
-            # doc任务通常依赖search结果
-            depends = []
-            if needs_search:
-                depends = [0]
-            
+            depends = [0] if needs_search else []
             plan.append({
                 "agent": "doc",
                 "task_id": f"task_{task_id_counter}",
@@ -152,7 +210,6 @@ class SupervisorAgent:
             })
             task_id_counter += 1
         
-        # 如果没有匹配任何Agent，生成一个默认的search任务
         if not plan:
             plan.append({
                 "agent": "search",
@@ -168,7 +225,6 @@ class SupervisorAgent:
     
     def _extract_code_command(self, text: str) -> Optional[str]:
         """从文本中提取代码执行命令"""
-        # 简单实现，查找反引号中的内容
         import re
         matches = re.findall(r'`([^`]+)`', text)
         if matches:
@@ -187,18 +243,24 @@ class SupervisorAgent:
             'running_tasks': 0
         })
         
+        # 首先创建主任务记录（用于外键关联）
+        main_task_id = self.storage.create_task(
+            conversation_id=state.get('conversation_id', ''),
+            task_type='supervisor',
+            payload={'user_input': state.get('user_input', ''), 'plan': plan}
+        )
+        
         # 创建任务记录到PostgreSQL
         tasks = {}
         for item in plan:
             agent = item['agent']
             task_def = item['task']
             
-            # 创建任务记录，使用state中的task_id
+            # 创建任务记录（每个子任务独立ID）
             db_task_id = self.storage.create_task(
                 conversation_id=state.get('conversation_id', ''),
                 task_type=task_def.get('type', 'unknown'),
-                payload=task_def,
-                task_id=state.get('task_id')  # 传入原始task_id
+                payload=task_def
             )
             
             tasks[item['task_id']] = {
@@ -213,7 +275,7 @@ class SupervisorAgent:
                 f"task_{item['task_id']}_status": 'pending'
             })
         
-        return {**state, "tasks": tasks}
+        return {**state, "tasks": tasks, "main_task_id": main_task_id}
     
     async def _monitor_progress(self, state: SupervisorState) -> SupervisorState:
         """监控任务执行进度"""
@@ -304,7 +366,7 @@ class SupervisorAgent:
             to_agent='user',
             message_type='final_response',
             payload={'response': final_response},
-            parent_task_id=task_id
+            parent_task_id=state.get('main_task_id')
         )
         
         # 更新任务状态
