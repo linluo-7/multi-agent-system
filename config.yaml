@@ -1,0 +1,109 @@
+# Multi-Agent System Configuration
+# 多Agent协作系统配置
+
+app:
+  host: "0.0.0.0"
+  port: 5002
+  debug: false
+  log_level: "INFO"
+
+database:
+  host: "localhost"
+  port: 5432
+  name: "multi_agent_db"
+  user: "postgres"
+  password: "postgres"
+  pool_size: 10
+
+redis:
+  host: "localhost"
+  port: 6379
+  db: 0
+  password: ""
+
+storage:
+  # Redis key前缀
+  key_prefix: "mas"
+  # 对话历史保留条数
+  max_history: 50
+  # 状态TTL（秒）
+  state_ttl: 3600
+
+agents:
+  supervisor:
+    name: "supervisor"
+    model: "minimax/MiniMax-M2"
+    temperature: 0.7
+    max_retries: 3
+
+  workers:
+    - name: "search"
+      model: "minimax/MiniMax-M2"
+      temperature: 0.5
+      tools: ["web_search", "web_fetch"]
+    - name: "code"
+      model: "minimax/MiniMax-M2"
+      temperature: 0.3
+      tools: ["file_read", "file_write", "exec"]
+    - name: "doc"
+      model: "minimax/MiniMax-M2"
+      temperature: 0.6
+      tools: ["file_read", "file_write"]
+
+mcp:
+  # MCP服务器配置
+  servers:
+    - name: "filesystem"
+      command: "npx"
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "/root"]
+    - name: "duckduckgo"
+      command: "npx"
+      args: ["-y", "@modelcontextprotocol/server-duckduckgo"]
+
+supervisor:
+  # 总控Agent系统提示词
+  system_prompt: |
+    你是一个多Agent协作系统的总控Agent。你的职责是：
+    1. 理解用户需求并拆解任务
+    2. 分配任务给合适的工作Agent
+    3. 收集并整合工作Agent的结果
+    4. 向用户返回最终结果
+    
+    你可以调用的工作Agent有：
+    - search: 搜索和获取网络信息
+    - code: 编写和执行代码
+    - doc: 生成和处理文档
+    
+    当用户提出需求时，先思考需要哪些Agent协作，然后按计划执行。
+
+workers:
+  search:
+    description: "网络搜索Agent，负责搜索和获取网络信息"
+    system_prompt: |
+      你是一个专业的网络搜索Agent。你的职责是：
+      1. 根据用户需求执行网络搜索
+      2. 抓取和分析网页内容
+      3. 提取关键信息并整理成结构化结果
+      
+      始终提供准确、可靠的信息来源。
+
+  code:
+    description: "代码编写Agent，负责编写、修改和执行代码"
+    system_prompt: |
+      你是一个专业的代码编写Agent。你的职责是：
+      1. 根据需求编写高质量代码
+      2. 修改和优化现有代码
+      3. 执行代码并处理结果
+      4. 编写测试用例
+      
+      代码要遵循最佳实践，保持清晰和可维护性。
+
+  doc:
+    description: "文档生成Agent，负责生成和处理各类文档"
+    system_prompt: |
+      你是一个专业的文档生成Agent。你的职责是：
+      1. 根据需求生成各类文档（Word、Markdown等）
+      2. 总结和整理信息
+      3. 格式化输出内容
+      
+      文档要结构清晰、内容准确。
