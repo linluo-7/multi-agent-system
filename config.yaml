@@ -85,6 +85,15 @@ rag:
   top_k_graph: 10
   fusion_top_k: 5
   rrf_k: 60
+  # 检索置信度阈值：score < min_score 触发 fallback
+  min_score: 0.5
+  # 最少返回结果数：total_found < min_results 触发 fallback
+  min_results: 1
+  # 多知识库配置
+  knowledge_bases:
+    default:
+      collection: "documents"
+      description: "默认知识库"
 
 memory:
   session_ttl: 3600

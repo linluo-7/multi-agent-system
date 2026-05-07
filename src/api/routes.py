@@ -257,12 +257,13 @@ async def websocket_endpoint(websocket: WebSocket):
 
 @router.post("/api/v1/rag/search")
 async def rag_search(request: dict):
-    """双路混合RAG检索"""
+    """双路混合RAG检索，支持指定知识库"""
     if _rag_service:
         result = await _rag_service.search(
             query=request.get("query", ""),
             fusion_method=request.get("fusion_method", "rrf"),
-            top_k=request.get("top_k", 5)
+            top_k=request.get("top_k", 5),
+            kb_name=request.get("kb_name", "default")
         )
         return result
     return {
@@ -275,19 +276,28 @@ async def rag_search(request: dict):
 
 
 @router.get("/api/v1/rag/documents")
-async def rag_list_documents():
-    """列出RAG知识库文档"""
+async def rag_list_documents(kb_name: str = None):
+    """列出RAG知识库文档，可按知识库筛选"""
     if _rag_service:
-        docs = _rag_service.list_documents()
+        docs = _rag_service.list_documents(kb_name=kb_name)
         return {"documents": docs, "total": len(docs)}
     return {"documents": [], "total": 0}
 
 
+@router.get("/api/v1/rag/knowledge-bases")
+async def rag_list_knowledge_bases():
+    """列出所有知识库"""
+    if _rag_service:
+        kbs = _rag_service.list_knowledge_bases()
+        return {"knowledge_bases": kbs, "total": len(kbs)}
+    return {"knowledge_bases": [], "total": 0}
+
+
 @router.post("/api/v1/rag/documents/import")
-async def rag_import_document(file_path: str = None):
-    """导入文档到RAG知识库"""
+async def rag_import_document(file_path: str = None, kb_name: str = "default"):
+    """导入文档到指定知识库"""
     if _rag_service and file_path:
-        doc = await _rag_service.import_document(file_path)
+        doc = await _rag_service.import_document(file_path, kb_name=kb_name)
         if doc:
             return {"status": "ok", "document": doc.to_dict()}
         return {"status": "error", "message": "文档导入失败"}

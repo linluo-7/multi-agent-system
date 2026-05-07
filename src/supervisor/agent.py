@@ -16,6 +16,7 @@ from .prompts import (
     RESULT_INTEGRATION_PROMPT,
     ERROR_HANDLING_PROMPT
 )
+from .intent_classifier import IntentClassifier
 
 
 class SupervisorState(dict):
@@ -57,6 +58,7 @@ class SupervisorAgent:
 
         self.max_retries = config.get('max_retries', 3)
         self.circuit_breaker_threshold = config.get('circuit_breaker_threshold', 5)
+        self.intent_classifier = IntentClassifier(llm_client=llm_client)
 
         self.graph = self._build_graph()
         self.checkpointer = MemorySaver()
@@ -152,52 +154,52 @@ class SupervisorAgent:
         return self._create_plan_rule_based(user_input)
 
     def _create_plan_rule_based(self, user_input: str) -> List[Dict]:
-        """基于规则的备用规划器"""
-        user_lower = user_input.lower()
+        """基于意图分类器的备用规划器"""
+        intent = self.intent_classifier.classify_sync(user_input)
         plan = []
         tid = 0
+        task_ids = []
 
-        needs_search = any(kw in user_lower for kw in
-            ['搜索', '查找', '查询', '了解', '知道', 'search', 'find', 'look up'])
-        needs_code = any(kw in user_lower for kw in
-            ['代码', '编程', '写程序', '执行', '运行', 'code', 'program', 'run', 'execute'])
-        needs_doc = any(kw in user_lower for kw in
-            ['文档', '报告', '生成', '导出', '写文章', 'doc', 'report', 'generate', 'write'])
-        needs_rag = any(kw in user_lower for kw in
-            ['知识库', '内部文档', '根据文档', '资料库', '合同', '手册',
-             'rag', 'knowledge base', 'internal doc', 'reference'])
+        # 按分类结果顺序创建任务
+        for agent in intent.suggested_agents:
+            if agent == 'rag':
+                rag_input = {"action": "qa", "query": user_input}
+                if intent.kb_name:
+                    rag_input['kb_name'] = intent.kb_name
+                plan.append({
+                    "agent": "rag", "task_id": f"task_{tid}",
+                    "task": {"type": "rag", "input": rag_input},
+                    "mode": "parallel"
+                })
+                task_ids.append(tid)
+                tid += 1
 
-        if needs_rag:
-            plan.append({
-                "agent": "rag", "task_id": f"task_{tid}",
-                "task": {"type": "rag", "input": {"action": "qa", "query": user_input}},
-                "mode": "parallel"
-            })
-            tid += 1
+            elif agent == 'search':
+                plan.append({
+                    "agent": "search", "task_id": f"task_{tid}",
+                    "task": {"type": "search", "input": {"query": user_input}},
+                    "mode": "parallel"
+                })
+                task_ids.append(tid)
+                tid += 1
 
-        if needs_search:
-            plan.append({
-                "agent": "search", "task_id": f"task_{tid}",
-                "task": {"type": "search", "input": {"query": user_input}},
-                "mode": "parallel"
-            })
-            tid += 1
+            elif agent == 'code':
+                plan.append({
+                    "agent": "code", "task_id": f"task_{tid}",
+                    "task": {"type": "code", "input": {"action": "execute", "command": user_input}},
+                    "mode": "parallel"
+                })
+                task_ids.append(tid)
+                tid += 1
 
-        if needs_code:
-            plan.append({
-                "agent": "code", "task_id": f"task_{tid}",
-                "task": {"type": "code", "input": {"action": "execute", "command": user_input}},
-                "depends_on": [], "mode": "parallel"
-            })
-            tid += 1
-
-        if needs_doc:
-            plan.append({
-                "agent": "doc", "task_id": f"task_{tid}",
-                "task": {"type": "doc", "input": {"action": "generate", "format": "markdown", "content": user_input}},
-                "depends_on": [0] if needs_search else [], "mode": "sequential"
-            })
-            tid += 1
+            elif agent == 'doc':
+                plan.append({
+                    "agent": "doc", "task_id": f"task_{tid}",
+                    "task": {"type": "doc", "input": {"action": "generate", "format": "markdown", "content": user_input}},
+                    "depends_on": task_ids[:], "mode": "sequential"
+                })
+                task_ids.append(tid)
+                tid += 1
 
         if not plan:
             plan.append({
@@ -205,14 +207,18 @@ class SupervisorAgent:
                 "task": {"type": "search", "input": {"query": user_input}},
                 "mode": "parallel"
             })
+            task_ids.append(tid)
+            tid += 1
 
-        # 最后追加 reasoning 校验
+        # 追加 reasoning 校验
         plan.append({
-            "agent": "reasoning", "task_id": f"task_{tid + 1}",
+            "agent": "reasoning", "task_id": f"task_{tid}",
             "task": {"type": "reasoning", "input": {"action": "verify", "criteria": ["accuracy", "completeness"]}},
-            "depends_on": list(range(tid + 1)), "mode": "sequential"
+            "depends_on": task_ids, "mode": "sequential"
         })
 
+        print(f"[Supervisor] Rule-based plan: intent={intent.intent} "
+              f"confidence={intent.confidence:.2f} agents={intent.suggested_agents}")
         return plan
 
     async def _dispatch_tasks(self, state: SupervisorState) -> SupervisorState:
@@ -303,7 +309,68 @@ class SupervisorAgent:
             self.redis.mark_agent_idle(agent_name)
             context['blackboard'] = self.redis.read_from_blackboard(task_id)
 
+        # ---- RAG → Search Fallback ----
+        state = await self._handle_rag_fallback(state, context)
+        results = state.get('results', results)
+
         return {**state, "results": results, "tasks": tasks}
+
+    async def _handle_rag_fallback(self, state: SupervisorState, context: dict) -> SupervisorState:
+        """检查 RAG 结果是否需要 fallback 到 web search"""
+        results = state.get('results', {})
+        plan = state.get('plan', [])
+        tasks = state.get('tasks', {})
+
+        for item in plan:
+            if item['agent'] != 'rag':
+                continue
+
+            local_task_id = item['task_id']
+            rag_result = results.get(local_task_id, {})
+
+            if not rag_result.get('needs_fallback', False):
+                continue
+
+            print(f"[Supervisor] RAG needs fallback, dispatching search...")
+            user_input = state.get('user_input', '')
+
+            # 用原始 query（可能来自 RAG 的 query 字段）
+            search_query = rag_result.get('query', user_input)
+
+            if 'search' not in self.workers:
+                print("[Supervisor] Fallback skipped: no search worker")
+                continue
+
+            search_agent = self.workers['search']
+            search_task = {
+                "type": "search",
+                "input": {
+                    "query": search_query,
+                    "source": "web",
+                    "_fallback_from": "rag"
+                }
+            }
+
+            fallback_tid = f"{local_task_id}_fallback"
+            try:
+                fallback_result = await search_agent.execute_task(search_task, context)
+                results[fallback_tid] = {
+                    **fallback_result,
+                    'fallback_from': 'rag',
+                    'rag_task_id': local_task_id
+                }
+                self.storage.save_audit_log(
+                    'rag_fallback',
+                    'supervisor',
+                    {'rag_task': local_task_id, 'fallback_task': fallback_tid,
+                     'search_count': fallback_result.get('count', 0)}
+                )
+                print(f"[Supervisor] RAG fallback complete: {fallback_result.get('count', 0)} results")
+            except Exception as e:
+                print(f"[Supervisor] RAG fallback failed: {e}")
+                results[fallback_tid] = {'error': str(e), 'fallback_from': 'rag'}
+
+        return {**state, "results": results}
 
     async def _verify_results(self, state: SupervisorState) -> SupervisorState:
         """Phase 4: 校验 — 验证结果质量"""
@@ -486,6 +553,14 @@ class SupervisorAgent:
 
         for task_id, result in results.items():
             if isinstance(result, dict):
+                if result.get('fallback_from') == 'rag':
+                    items = result.get('results', [])
+                    count = result.get('count', len(items))
+                    response_parts.append(f"---\n**🌐 知识库信息不足，已补充网络搜索**（{count}条结果）：")
+                    for r in items[:3]:
+                        response_parts.append(f"- {r.get('title', '')}: {r.get('snippet', '')[:120]}")
+                    continue
+
                 if 'error' in result:
                     response_parts.append(f"⚠ {task_id}: {result['error']}")
                     continue

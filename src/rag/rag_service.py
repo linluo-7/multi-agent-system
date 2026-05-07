@@ -33,6 +33,8 @@ class RAGService:
         self.fusion = RetrievalFusion(config.get('rag', {}))
 
         self._docs: Dict[str, Document] = {}
+        self._kb_docs: Dict[str, Dict[str, Document]] = {}  # kb_name -> {doc_id: Document}
+        self._kbs = config.get('rag', {}).get('knowledge_bases', {'default': {'collection': 'documents'}})
         self._initialized = False
 
     async def initialize(self):
@@ -41,64 +43,81 @@ class RAGService:
         self._initialized = True
         print("[RAGService] Initialized successfully")
 
-    async def import_document(self, file_path: str) -> Optional[Document]:
-        """导入单个文档：解析 → 向量化 → 建图"""
+    def _get_collection(self, kb_name: str = None) -> str:
+        """根据知识库名获取对应的 collection 名称"""
+        kb_name = kb_name or 'default'
+        kb = self._kbs.get(kb_name, self._kbs.get('default', {'collection': 'documents'}))
+        return kb.get('collection', 'documents')
+
+    async def import_document(self, file_path: str, kb_name: str = 'default') -> Optional[Document]:
+        """导入单个文档到指定知识库：解析 → 向量化 → 建图"""
         doc = await self.loader.load_file(file_path)
         if doc is None:
             return None
 
         self._docs[doc.id] = doc
+        self._kb_docs.setdefault(kb_name, {})[doc.id] = doc
 
+        collection = self._get_collection(kb_name)
         await self.vector_store.index_document(doc.id, doc.content, metadata={
             'filename': doc.filename,
             'file_type': doc.file_type,
             'char_count': len(doc.content),
-            'chunk_count': len(doc.chunks)
-        })
+            'chunk_count': len(doc.chunks),
+            'kb_name': kb_name
+        }, collection=collection)
 
         await self.kg_retriever.extract_and_index(doc.id, doc.content)
 
-        print(f"[RAGService] Imported document: {doc.filename} ({len(doc.chunks)} chunks)")
+        print(f"[RAGService] Imported document: {doc.filename} → kb={kb_name} "
+              f"({len(doc.chunks)} chunks)")
         return doc
 
-    async def import_directory(self, dir_path: str) -> List[Document]:
-        """批量导入目录下的文档"""
+    async def import_directory(self, dir_path: str, kb_name: str = 'default') -> List[Document]:
+        """批量导入目录下的文档到指定知识库"""
         docs = await self.loader.load_directory(dir_path)
         for doc in docs:
             self._docs[doc.id] = doc
+            self._kb_docs.setdefault(kb_name, {})[doc.id] = doc
 
+        collection = self._get_collection(kb_name)
         if docs:
             await self.vector_store.index_documents([
                 {'id': d.id, 'text': d.content, 'metadata': {
-                    'filename': d.filename, 'file_type': d.file_type
+                    'filename': d.filename, 'file_type': d.file_type, 'kb_name': kb_name
                 }} for d in docs
-            ])
+            ], collection=collection)
             for doc in docs:
                 await self.kg_retriever.extract_and_index(doc.id, doc.content)
 
-        print(f"[RAGService] Imported {len(docs)} documents from '{dir_path}'")
+        print(f"[RAGService] Imported {len(docs)} documents from '{dir_path}' → kb={kb_name}")
         return docs
 
     async def search(
         self,
         query: str,
         top_k: int = None,
-        fusion_method: str = 'rrf'
+        fusion_method: str = 'rrf',
+        kb_name: str = 'default'
     ) -> Dict[str, Any]:
         """
-        双路混合检索
+        双路混合检索，支持指定知识库
 
         Args:
             query: 查询文本
             top_k: 返回结果数
             fusion_method: 融合方法 'rrf' / 'weighted'
+            kb_name: 知识库名称
 
         Returns:
-            {'results': [...], 'sources': [...], 'context': '...'}
+            {'results': [...], 'sources': [...], 'context': '...', 'kb_name': '...'}
         """
         top_k = top_k or self.config.get('rag', {}).get('fusion_top_k', 5)
+        collection = self._get_collection(kb_name)
 
-        vector_results_raw = await self.vector_store.search(query, top_k=top_k * 2)
+        vector_results_raw = await self.vector_store.search(
+            query, top_k=top_k * 2, collection=collection
+        )
         kg_results_raw = await self.kg_retriever.search_by_semantic(query, limit=top_k * 2)
 
         vector_results = [
@@ -144,6 +163,7 @@ class RAGService:
 
         return {
             'query': query,
+            'kb_name': kb_name,
             'results': [{'id': r.id, 'text': r.text, 'score': r.score, 'source': r.source}
                         for r in fused],
             'sources': sources,
@@ -155,10 +175,11 @@ class RAGService:
         self,
         query: str,
         llm_client=None,
-        max_sources: int = 5
+        max_sources: int = 5,
+        kb_name: str = 'default'
     ) -> Dict[str, Any]:
         """端到端问答：检索 + LLM生成答案"""
-        search_result = await self.search(query, top_k=max_sources)
+        search_result = await self.search(query, top_k=max_sources, kb_name=kb_name)
 
         answer = None
         if llm_client:
@@ -227,9 +248,19 @@ class RAGService:
         await self.vector_store.delete_document(doc_id)
         print(f"[RAGService] Document '{doc_id}' removed")
 
-    def list_documents(self) -> List[dict]:
-        """列出所有已索引文档"""
+    def list_documents(self, kb_name: str = None) -> List[dict]:
+        """列出已索引文档，可按知识库筛选"""
+        if kb_name and kb_name in self._kb_docs:
+            return [doc.to_dict() for doc in self._kb_docs[kb_name].values()]
         return [doc.to_dict() for doc in self._docs.values()]
+
+    def list_knowledge_bases(self) -> List[dict]:
+        """列出所有知识库及其文档数"""
+        return [
+            {'name': name, 'collection': cfg.get('collection', ''),
+             'description': cfg.get('description', ''), 'doc_count': len(self._kb_docs.get(name, {}))}
+            for name, cfg in self._kbs.items()
+        ]
 
     async def get_document_preview(self, doc_id: str) -> Optional[dict]:
         """获取文档预览"""

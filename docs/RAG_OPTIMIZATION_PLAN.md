@@ -1,6 +1,6 @@
 # RAG 商业化优化任务清单
 
-> 最后更新: 2026-05-07
+> 最后更新: 2026-05-07 18:30
 
 ## 任务状态说明
 
@@ -26,10 +26,10 @@
 
 | # | 任务 | 状态 | 说明 |
 |---|------|------|------|
-| P1-1 | 意图分类器 | ⬜ | 方案待定：简单方案扩关键词；理想方案小模型/LLM 做意图分类（rag / search / code / doc / reasoning / 混合） |
-| P1-2 | RAG → Search Fallback 链 | ⬜ | RAG 检索结果置信度低于阈值时，自动触发 Search Agent 补充，融合双路结果 |
-| P1-3 | 多知识库动态路由 | ⬜ | Milvus collection 按 namespace 隔离；查询时根据意图或参数路由到指定知识库 |
-| P1-4 | 检索置信度阈值 | ⬜ | `search()` 返回时附带置信度标记；`answer_question()` 支持 `needs_fallback` 信号 |
+| P1-1 | 意图分类器 | ✅ | 新建 `src/supervisor/intent_classifier.py`，关键词 + LLM 两级分类；Supervisor 集成到规则/LLM 规划器 |
+| P1-2 | RAG → Search Fallback 链 | ✅ | `_execute_tasks` 完成后自动检测 `needs_fallback`，触发 Search Agent 补充，`_build_response` 展示融合结果 |
+| P1-3 | 多知识库动态路由 | ✅ | RAGService / VectorStore / RAGAgent / API 全部支持 `kb_name` 参数；config.yaml 定义多知识库配置；新增 `GET /api/v1/rag/knowledge-bases` |
+| P1-4 | 检索置信度阈值 | ✅ | config.yaml 新增 `min_score` / `min_results`；RAGAgent 从配置读取阈值，低于阈值自动标记 `needs_fallback: true` |
 
 ---
 
@@ -87,13 +87,13 @@
 
 ```
 P0 基础联通     [4/4]  ████████████████████  100%
-P1 意图路由     [0/4]  ░░░░░░░░░░░░░░░░░░░░  0%
+P1 意图路由     [4/4]  ████████████████████  100%
 P2 检索质量     [0/7]  ░░░░░░░░░░░░░░░░░░░░  0%
 P3 答案质量     [0/4]  ░░░░░░░░░░░░░░░░░░░░  0%
 P4 前端与数据   [0/6]  ░░░░░░░░░░░░░░░░░░░░  0%
 P5 工程化       [0/5]  ░░░░░░░░░░░░░░░░░░░░  0%
 ────────────────────────────────────────────
-总计           [4/30] ██░░░░░░░░░░░░░░░░░░  13%
+总计           [8/30] █████░░░░░░░░░░░░░░░  27%
 ```
 
 ## 建议执行顺序

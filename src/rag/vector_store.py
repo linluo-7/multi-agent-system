@@ -25,8 +25,10 @@ class VectorStore:
         self._initialized = True
         print(f"[VectorStore] Initialized, collection='{self.collection_name}'")
 
-    async def index_document(self, doc_id: str, text: str, metadata: dict = None) -> int:
+    async def index_document(self, doc_id: str, text: str,
+                             metadata: dict = None, collection: str = None) -> int:
         """索引单个文档（分块后向量化存储）"""
+        coll = collection or self.collection_name
         from ..llm.embeddings import EmbeddingService
         embed_svc = self.embedding
 
@@ -53,18 +55,20 @@ class VectorStore:
                 'timestamp': datetime.now().timestamp()
             })
 
-        await self.milvus.insert(self.collection_name, vectors)
-        print(f"[VectorStore] Indexed doc '{doc_id}': {len(chunks)} chunks")
+        await self.milvus.insert(coll, vectors)
+        print(f"[VectorStore] Indexed doc '{doc_id}': {len(chunks)} chunks → {coll}")
         return len(chunks)
 
-    async def index_documents(self, docs: List[Dict[str, Any]]) -> int:
+    async def index_documents(self, docs: List[Dict[str, Any]],
+                              collection: str = None) -> int:
         """批量索引文档"""
         total = 0
         for doc in docs:
             total += await self.index_document(
                 doc_id=doc['id'],
                 text=doc.get('text', doc.get('content', '')),
-                metadata=doc.get('metadata', {})
+                metadata=doc.get('metadata', {}),
+                collection=collection
             )
         return total
 
@@ -72,13 +76,14 @@ class VectorStore:
         self,
         query: str,
         top_k: int = None,
-        filter_expr: str = None
+        filter_expr: str = None,
+        collection: str = None
     ) -> List[Dict[str, Any]]:
-        """向量检索"""
+        """向量检索，支持指定 collection"""
         top_k = top_k or self.top_k
         query_embedding = await self.embedding.encode_single(query)
         results = await self.milvus.search(
-            self.collection_name,
+            collection or self.collection_name,
             query_embedding,
             top_k=top_k,
             filter_expr=filter_expr

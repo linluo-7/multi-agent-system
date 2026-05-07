@@ -10,6 +10,7 @@ from .prompts import (
     RESULT_INTEGRATION_PROMPT,
     ERROR_HANDLING_PROMPT
 )
+from .intent_classifier import IntentClassifier, IntentResult
 
 __all__ = [
     'SupervisorAgent',
@@ -17,5 +18,7 @@ __all__ = [
     'SUPERVISOR_SYSTEM_PROMPT',
     'TASK_ANALYSIS_PROMPT',
     'RESULT_INTEGRATION_PROMPT',
-    'ERROR_HANDLING_PROMPT'
+    'ERROR_HANDLING_PROMPT',
+    'IntentClassifier',
+    'IntentResult'
 ]
