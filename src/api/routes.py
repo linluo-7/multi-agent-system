@@ -502,6 +502,120 @@ async def rag_indexer_scan():
     return {"status": "error", "message": "索引器未启动，请先调用 /indexer/start"}
 
 
+# ========== P5: 工程化 — 追踪 / 评估 / 缓存 / ACL / 反馈 ==========
+
+@router.get("/api/v1/rag/trace/stats")
+async def rag_trace_stats():
+    """RAG全链路追踪统计"""
+    if _rag_service and hasattr(_rag_service, 'tracer'):
+        return _rag_service.tracer.get_stats()
+    return {'total_requests': 0, 'message': '追踪器未就绪'}
+
+
+@router.get("/api/v1/rag/trace/recent")
+async def rag_trace_recent(limit: int = 20):
+    """最近RAG追踪记录"""
+    if _rag_service and hasattr(_rag_service, 'tracer'):
+        return {'traces': _rag_service.tracer.get_recent_traces(limit)}
+    return {'traces': []}
+
+
+@router.get("/api/v1/rag/cache/stats")
+async def rag_cache_stats():
+    """语义缓存统计"""
+    if _rag_service and hasattr(_rag_service, 'cache'):
+        return _rag_service.cache.get_stats()
+    return {'message': '缓存未就绪'}
+
+
+@router.post("/api/v1/rag/cache/invalidate")
+async def rag_cache_invalidate(kb_name: str = None):
+    """失效缓存"""
+    if _rag_service and hasattr(_rag_service, 'cache'):
+        await _rag_service.cache.invalidate(kb_name=kb_name)
+        return {'status': 'ok', 'message': f'缓存已失效 (kb={kb_name or "all"})'}
+    return {'status': 'error', 'message': '缓存未就绪'}
+
+
+@router.post("/api/v1/rag/acl")
+async def rag_set_acl(request: dict):
+    """设置知识库ACL"""
+    if _rag_service:
+        _rag_service.set_acl(
+            kb_name=request.get('kb_name', 'default'),
+            readers=request.get('readers'),
+            writers=request.get('writers')
+        )
+        return {'status': 'ok', 'acl': _rag_service.get_acl(request.get('kb_name'))}
+    return {'status': 'error', 'message': 'RAG服务未就绪'}
+
+
+@router.get("/api/v1/rag/acl")
+async def rag_get_acl(kb_name: str = None):
+    """查看ACL"""
+    if _rag_service:
+        return {'acl': _rag_service.get_acl(kb_name)}
+    return {'acl': {}}
+
+
+@router.post("/api/v1/rag/eval/run")
+async def rag_eval_run(request: dict):
+    """运行RAGAS评估"""
+    if not _rag_service:
+        return {'status': 'error', 'message': 'RAG服务未就绪'}
+
+    query = request.get('query', '')
+    answer = request.get('answer', '')
+    if not query:
+        return {'status': 'error', 'message': '缺少query'}
+
+    # 先检索
+    search_result = await _rag_service.search(query)
+    contexts = [r.get('text', '') for r in search_result.get('results', [])]
+
+    from rag.ragas_eval import RAGASEvaluator
+    evaluator = RAGASEvaluator(llm_client=getattr(_rag_service, 'llm', None))
+
+    if answer:
+        result = evaluator.evaluate_simple(query, answer, contexts, search_result.get('sources', []))
+        return {'status': 'ok', 'evaluation': {
+            'faithfulness': result.faithfulness,
+            'relevance': result.relevance,
+            'precision': result.precision,
+            'context_recall': result.context_recall,
+            'overall': result.overall,
+            'details': result.details
+        }, 'recommendation': 'pass' if result.overall >= 0.6 else 'review'}
+
+    return {'status': 'ok', 'contexts': len(contexts), 'message': '未提供answer，仅返回检索上下文统计'}
+
+
+@router.post("/api/v1/rag/feedback")
+async def rag_submit_feedback(request: dict):
+    """提交RAG答案反馈"""
+    query = request.get('query', '')
+    answer = request.get('answer', '')
+    rating = request.get('rating')  # 'like' / 'dislike' / 1-5
+    feedback_text = request.get('feedback', '')
+
+    # 记录到审计日志
+    if _postgres_storage:
+        _postgres_storage.save_audit_log(
+            'rag_feedback',
+            'user',
+            {'query': query[:200], 'answer_preview': answer[:200],
+             'rating': rating, 'feedback': feedback_text}
+        )
+
+    # 如果关联了skill，更新成功率
+    if _skill_manager and 'skill_id' in request:
+        skill_id = request['skill_id']
+        passed = rating in ('like', 4, 5)
+        _skill_manager.evaluate_skill(skill_id, passed, score=float(rating) / 5 if isinstance(rating, (int, float)) else 0.5)
+
+    return {'status': 'ok', 'message': '反馈已记录'}
+
+
 # ========== Memory Endpoints ==========
 
 @router.get("/api/v1/memory/skills")

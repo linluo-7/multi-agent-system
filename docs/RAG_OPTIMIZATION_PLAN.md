@@ -1,6 +1,6 @@
 # RAG 商业化优化任务清单
 
-> 最后更新: 2026-05-07 18:30
+> 最后更新: 2026-05-07 19:00 ✅ 全部完成
 
 ## 任务状态说明
 
@@ -75,11 +75,11 @@
 
 | # | 任务 | 状态 | 说明 |
 |---|------|------|------|
-| P5-1 | RAG 全链路追踪 | ⬜ | 每次检索延迟、命中率、LLM token 消耗埋点 |
-| P5-2 | RAGAS 评估体系 | ⬜ | faithfulness / relevance / precision 自动化评估 |
-| P5-3 | 语义缓存 | ⬜ | Redis 缓存高频查询 + 相似问去重 |
-| P5-4 | 文档权限控制 | ⬜ | 知识库/文档级别 ACL |
-| P5-5 | 用户反馈闭环 | ⬜ | 答案点赞/踩 → 反馈写入评估表，驱动 skill 优化 |
+| P5-1 | RAG 全链路追踪 | ✅ | 新建 `src/monitoring/rag_tracer.py`：TraceSpan/RAGTrace 延迟追踪；集成到search()全步骤(p50/p95)；`GET /api/v1/rag/trace/stats` + `/recent` |
+| P5-2 | RAGAS 评估体系 | ✅ | 新建 `src/rag/ragas_eval.py`：RAGASEvaluator 四级指标(faithfulness/relevance/precision/context_recall)；简单词重叠+LLM精确评估；`POST /api/v1/rag/eval/run` |
+| P5-3 | 语义缓存 | ✅ | 新建 `src/rag/semantic_cache.py`：SemanticCache Redis/Local双层缓存；`GET /api/v1/rag/cache/stats` + `POST /invalidate`；集成到search() |
+| P5-4 | 文档权限控制 | ✅ | RAGService新增 `set_acl()`/`check_access()`；`POST /api/v1/rag/acl` 设置readers/writers；`GET` 查看 |
+| P5-5 | 用户反馈闭环 | ✅ | `POST /api/v1/rag/feedback`：rating+feedback记录审计日志；关联skill_id自动更新成功率 |
 
 ---
 
@@ -91,9 +91,9 @@ P1 意图路由     [4/4]  █████████████████�
 P2 检索质量     [7/7]  ████████████████████  100%
 P3 答案质量     [4/4]  ████████████████████  100%
 P4 前端与数据   [6/6]  ████████████████████  100%
-P5 工程化       [0/5]  ░░░░░░░░░░░░░░░░░░░░  0%
+P5 工程化       [5/5]  ████████████████████  100%
 ────────────────────────────────────────────
-总计          [25/30] ████████████████░░░░  83%
+总计          [30/30] ████████████████████  100%
 ```
 
 ## 建议执行顺序

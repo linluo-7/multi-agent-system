@@ -14,19 +14,23 @@ from .kg_retriever import KnowledgeGraphRetriever
 from .retrieval_fusion import RetrievalFusion, SearchResult
 from .query_rewriter import QueryRewriter
 from .sparse_retriever import SparseRetriever
+from ..monitoring.rag_tracer import RAGTracer
+from .semantic_cache import SemanticCache
 
 
 class RAGService:
     """双路混合RAG核心服务"""
 
     def __init__(self, config: dict, milvus_manager, neo4j_manager, embedding_service,
-                 llm_client=None):
+                 llm_client=None, redis_manager=None, metrics_collector=None):
         self.config = config
         self.milvus = milvus_manager
         self.neo4j = neo4j_manager
         self.embedding = embedding_service
         self.llm = llm_client
         self.query_rewriter = QueryRewriter(llm_client=llm_client, config=config.get('rag', {}))
+        self.tracer = RAGTracer(redis_manager=redis_manager, metrics_collector=metrics_collector)
+        self.cache = SemanticCache(redis_manager=redis_manager, config=config.get('rag', {}))
 
         self.loader = DocumentLoader(config.get('rag', {}))
         self.vector_store = VectorStore(
@@ -133,12 +137,23 @@ class RAGService:
         top_k = top_k or self.config.get('rag', {}).get('fusion_top_k', 5)
         collection = self._get_collection(kb_name)
 
+        # 语义缓存
+        cached = await self.cache.get(query, kb_name)
+        if cached:
+            return cached
+
+        # 链路追踪
+        trace = self.tracer.start_trace(query, kb_name)
+
         # Query rewriting
+        span_rewrite = trace.span('query_rewrite')
         rewrite_result = await self.query_rewriter.rewrite(
             query, history=history, use_hyde=use_hyde, decompose=decompose
         )
         search_query = rewrite_result.get('search_query', query)
         sub_queries = rewrite_result.get('sub_queries', [])
+        span_rewrite.finish(hyde=rewrite_result.get('hyde_document') is not None,
+                            decomposed=len(sub_queries) > 0)
 
         # 处理子问题：每个子问题分别检索再合并
         all_vector_raw = []
@@ -149,10 +164,18 @@ class RAGService:
             queries_to_search = sub_queries[:3]  # 最多3个子问题
 
         for sq in queries_to_search:
+            span_v = trace.span('vector_search')
             v_raw = await self.vector_store.search(
                 sq, top_k=top_k * 2, collection=collection
             )
+            trace.vector_latency_ms += span_v.duration_ms
+            span_v.finish(hits=len(v_raw))
+
+            span_kg = trace.span('kg_search')
             kg_raw = await self.kg_retriever.search_by_semantic(sq, limit=top_k * 2)
+            trace.kg_latency_ms += span_kg.duration_ms
+            span_kg.finish(hits=len(kg_raw.get('direct_matches', [])))
+
             all_vector_raw.extend(v_raw)
             all_kg_raw['direct_matches'].extend(kg_raw.get('direct_matches', []))
             all_kg_raw['expanded_paths'].extend(kg_raw.get('expanded_paths', []))
@@ -168,7 +191,10 @@ class RAGService:
         kg_results_raw = all_kg_raw
 
         # 稀疏检索 (BM25)
+        span_sp = trace.span('sparse_search')
         sparse_raw = self.sparse_retriever.search(search_query, top_k=top_k * 2)
+        trace.sparse_latency_ms = span_sp.duration_ms
+        span_sp.finish(hits=len(sparse_raw))
 
         vector_results = [
             SearchResult(
@@ -206,15 +232,22 @@ class RAGService:
             ]
         }
 
+        span_fusion = trace.span('fusion')
         if fusion_method == 'weighted':
             fused = self.fusion.weighted_fusion(result_groups, top_k=top_k)
         else:
             fused = self.fusion.rrf_fusion(result_groups, top_k=top_k)
+        trace.fusion_latency_ms = span_fusion.duration_ms
+        span_fusion.finish(candidates=len(fused))
 
         # Re-rank：LLM 或多样性重排
+        span_rerank = trace.span('rerank')
         fused = await self.fusion.rerank_by_llm(fused, query, llm_client=self.llm, top_n=top_k)
+        trace.rerank_latency_ms = span_rerank.duration_ms
+        span_rerank.finish()
 
         # 父文档扩展：top结果获取更大上下文
+        span_parent = trace.span('parent_doc_expand')
         top_results = [{'id': r.id, 'text': r.text, 'score': r.score,
                         'metadata': r.metadata, 'highlight': r.highlight}
                        for r in fused]
@@ -233,9 +266,15 @@ class RAGService:
                 source_info['document'] = self._docs[doc_id].filename
             sources.append(source_info)
 
+        span_parent.finish()
         context = self.fusion.format_for_llm(fused, query)
 
-        return {
+        trace.finish({'total_found': len(fused), 'results': [
+            {'score': r.score} for r in fused
+        ]})
+        self.tracer.record_trace(trace)
+
+        result = {
             'query': query,
             'search_query': search_query,
             'rewritten': rewrite_result.get('rewritten', query),
@@ -248,6 +287,10 @@ class RAGService:
             'context': context,
             'total_found': len(fused)
         }
+
+        # 写入缓存
+        await self.cache.set(query, result, kb_name)
+        return result
 
     async def multi_hop_search(
         self,
@@ -661,6 +704,34 @@ class RAGService:
                                   for i, c in enumerate(parent_chunks)]
 
         return results
+
+    # ---- ACL ----
+
+    _acl: Dict[str, Dict[str, List[str]]] = {}  # {kb_name: {readers: [...], writers: [...]}}
+
+    def set_acl(self, kb_name: str, readers: List[str] = None, writers: List[str] = None):
+        """设置知识库权限"""
+        if kb_name not in self._acl:
+            self._acl[kb_name] = {'readers': [], 'writers': []}
+        if readers is not None:
+            self._acl[kb_name]['readers'] = readers
+        if writers is not None:
+            self._acl[kb_name]['writers'] = writers
+
+    def check_access(self, kb_name: str, user: str, mode: str = 'read') -> bool:
+        """检查用户对知识库的访问权限"""
+        if kb_name not in self._acl:
+            return True  # 无ACL限制，默认允许
+        acl = self._acl[kb_name]
+        allowed = acl.get('readers', []) if mode == 'read' else acl.get('writers', [])
+        if not allowed:
+            return True
+        return user in allowed
+
+    def get_acl(self, kb_name: str = None) -> dict:
+        if kb_name:
+            return self._acl.get(kb_name, {'readers': [], 'writers': []})
+        return dict(self._acl)
 
     def list_knowledge_bases(self) -> List[dict]:
         """列出所有知识库及其文档数"""

@@ -4,5 +4,6 @@ Monitoring Package
 """
 
 from .metrics import MetricsCollector
+from .rag_tracer import RAGTracer, RAGTrace, TraceSpan
 
-__all__ = ['MetricsCollector']
+__all__ = ['MetricsCollector', 'RAGTracer', 'RAGTrace', 'TraceSpan']
