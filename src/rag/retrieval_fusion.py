@@ -116,21 +116,80 @@ class RetrievalFusion:
 
         return fused
 
-    def rerank_by_llm(
+    async def rerank_by_llm(
         self,
         candidates: List[SearchResult],
-        query: str
+        query: str,
+        llm_client=None,
+        top_n: int = None
     ) -> List[SearchResult]:
         """
-        LLM重排序：使用LLM对候选结果重新排序（占位实现）
+        LLM / Cross-encoder 重排序
 
-        生产环境：
-        - 使用 cross-encoder 模型
-        - 或调用 LLM 对(query, doc)对打分
+        Args:
+            candidates: 融合后的候选结果
+            query: 原始查询
+            llm_client: LLM客户端
+            top_n: 返回top-n
         """
-        # 占位实现：按score排序（保持原有排序）
+        top_n = top_n or self.fusion_top_k
+        if not candidates:
+            return []
+        if len(candidates) <= 1:
+            return candidates[:top_n]
+
+        if llm_client:
+            return await self._llm_pointwise_rerank(candidates, query, llm_client, top_n)
+        else:
+            return self._diversity_rerank(candidates, query, top_n)
+
+    async def _llm_pointwise_rerank(
+        self, candidates: List[SearchResult], query: str, llm_client, top_n: int
+    ) -> List[SearchResult]:
+        """LLM pointwise 相关性打分"""
+        import json
+        docs_text = '\n\n'.join([
+            f"[{i}] id={r.id[:20]}: {r.text[:200]}"
+            for i, r in enumerate(candidates[:10])
+        ])
+        try:
+            response = await llm_client.ainvoke([
+                {"role": "system", "content": "你是一个文档相关性评估专家。对每个文档ID与查询的相关性打分(0-10分)，输出JSON数组：[{\"id\": \"开头字符\", \"score\": 8, \"reason\": \"理由\"}]"},
+                {"role": "user", "content": f"查询：{query}\n\n候选文档：\n{docs_text}"}
+            ], temperature=0.1)
+            json_match = __import__('re').search(r'\[.*\]', response, re.DOTALL)
+            if json_match:
+                scored = json.loads(json_match.group())
+                score_map = {}
+                for s in scored:
+                    for c in candidates:
+                        if c.id.startswith(s.get('id', '')[:8]):
+                            score_map[c.id] = s.get('score', 5)
+                            break
+                for c in candidates:
+                    llm_score = score_map.get(c.id, 5.0)
+                    c.score = 0.5 * c.score + 0.5 * (llm_score / 10.0)
+                print(f"[RetrievalFusion] LLM reranked {len(scored)}/{len(candidates)} candidates")
+        except Exception as e:
+            print(f"[RetrievalFusion] LLM rerank failed: {e}")
+
         candidates.sort(key=lambda x: x.score, reverse=True)
-        return candidates
+        return candidates[:top_n]
+
+    def _diversity_rerank(
+        self, candidates: List[SearchResult], query: str, top_n: int
+    ) -> List[SearchResult]:
+        """多样性重排（MMR简化版）：按分数排序 + 内容去重"""
+        seen_texts = set()
+        reranked = []
+        for r in sorted(candidates, key=lambda x: x.score, reverse=True):
+            if len(reranked) >= top_n:
+                break
+            text_sig = r.text[:80]
+            if text_sig not in seen_texts:
+                seen_texts.add(text_sig)
+                reranked.append(r)
+        return reranked
 
     def deduplicate(self, results: List[SearchResult]) -> List[SearchResult]:
         """去重：保留每个ID得分最高的"""

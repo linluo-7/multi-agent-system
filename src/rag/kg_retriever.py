@@ -10,9 +10,10 @@ from datetime import datetime
 class KnowledgeGraphRetriever:
     """基于Neo4j的知识图谱检索器"""
 
-    def __init__(self, config: dict, neo4j_manager):
+    def __init__(self, config: dict, neo4j_manager, llm_client=None):
         self.config = config
         self.neo4j = neo4j_manager
+        self.llm = llm_client
         self.top_k = config.get('top_k_graph', 10)
         self._initialized = False
 
@@ -54,11 +55,15 @@ class KnowledgeGraphRetriever:
     ):
         """从文档提取实体关系并索引到知识图谱"""
         if entities is None:
-            entities = self._extract_entities_from_text(doc_id, text)
+            if self.llm:
+                entities, relations = await self._extract_by_llm(doc_id, text)
+            else:
+                entities = self._extract_entities_from_text(doc_id, text)
         if relations is None:
             relations = self._extract_relations_from_text(doc_id, text, entities)
 
-        await self.index_entities(entities)
+        if entities:
+            await self.index_entities(entities)
         if relations:
             await self.index_relations(relations)
 
@@ -96,6 +101,39 @@ class KnowledgeGraphRetriever:
             })
 
         return entities
+
+    async def _extract_by_llm(
+        self, doc_id: str, text: str
+    ) -> tuple:
+        """LLM 驱动的实体关系抽取"""
+        import json
+        snippet = text[:3000]
+        system_prompt = """你是信息抽取专家。从文档文本中提取实体和关系。
+
+输出JSON格式：
+{
+  "entities": [{"id": "entity_id", "label": "Person/Organization/Concept/Term/Document", "name": "实体名"}, ...],
+  "relations": [{"from": "entity_id_1", "to": "entity_id_2", "type": "RELATED_TO/CONTAINS/PART_OF/DEPENDS_ON", "properties": {}}, ...]
+}"""
+
+        try:
+            response = await self.llm.ainvoke([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": f"文档ID: {doc_id}\n文本：{snippet}"}
+            ], temperature=0.2)
+
+            json_match = __import__('re').search(r'\{.*\}', response, re.DOTALL)
+            if json_match:
+                data = json.loads(json_match.group())
+                entities = data.get('entities', [])
+                relations = data.get('relations', [])
+                print(f"[KGRetriever] LLM extracted {len(entities)} entities, "
+                      f"{len(relations)} relations")
+                return entities, relations
+        except Exception as e:
+            print(f"[KGRetriever] LLM extraction failed: {e}")
+
+        return [], []
 
     def _extract_relations_from_text(
         self,

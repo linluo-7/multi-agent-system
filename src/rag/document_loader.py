@@ -6,7 +6,7 @@ Document Loader
 import re
 import asyncio
 from pathlib import Path
-from typing import List, Optional
+from typing import List, Optional, Tuple
 from dataclasses import dataclass, field
 from datetime import datetime
 
@@ -166,30 +166,123 @@ class DocumentLoader:
         return text.strip()
 
     def _chunk_text(self, text: str) -> List[str]:
-        """文本分块，支持滑动窗口重叠"""
+        """语义分块：按段落→句子边界切分，保持语义完整"""
         if len(text) <= self.chunk_size:
             return [text] if text.strip() else []
 
+        # 1. 提取文档层级结构（标题/章节）
+        sections = self._split_by_sections(text)
+
+        # 2. 对每个 section 进行段落→句子粒度分块
         chunks = []
-        start = 0
-        while start < len(text):
-            end = start + self.chunk_size
-            chunk = text[start:end]
-
-            if end < len(text):
-                # 优先在句末断句
-                for sep in ['。\n', '。', '.\n', '.', '\n\n', '\n']:
-                    last = chunk.rfind(sep)
-                    if last > self.chunk_size // 2:
-                        end = start + last + len(sep)
-                        break
-
-            chunk = text[start:end].strip()
-            if chunk:
-                chunks.append(chunk)
-            start = end - self.chunk_overlap
+        for section_title, section_text in sections:
+            section_chunks = self._semantic_chunk(section_text, section_title)
+            chunks.extend(section_chunks)
 
         return chunks
+
+    def _split_by_sections(self, text: str) -> List[Tuple[str, str]]:
+        """按标题/章节分割文档，保留层级上下文"""
+        # 匹配 Markdown 标题、中文章节标记等
+        section_patterns = [
+            r'^#{1,3}\s+(.+)$',           # Markdown headers
+            r'^(第[一二三四五六七八九十\d]+[章节篇部])[：:\s]*(.*)$',  # 中文章节
+            r'^(\d+[\.、]\s*.+)$',          # 数字标题
+        ]
+
+        lines = text.split('\n')
+        sections = []
+        current_title = ''
+        current_lines = []
+
+        for line in lines:
+            is_section = False
+            for pattern in section_patterns:
+                m = re.match(pattern, line.strip())
+                if m:
+                    if current_lines:
+                        sections.append((current_title, '\n'.join(current_lines)))
+                    current_title = line.strip()
+                    current_lines = []
+                    is_section = True
+                    break
+            if not is_section:
+                current_lines.append(line)
+
+        if current_lines:
+            sections.append((current_title, '\n'.join(current_lines)))
+
+        if not sections:
+            sections = [('', text)]
+
+        return sections
+
+    def _semantic_chunk(self, text: str, section_title: str = '') -> List[str]:
+        """按段落→句子语义边界分块"""
+        # 按段落分割
+        paragraphs = re.split(r'\n\s*\n', text)
+        # 将每个段落拆成句子
+        sentences = []
+        for para in paragraphs:
+            para = para.strip()
+            if not para:
+                continue
+            para_sents = self._split_sentences(para)
+            sentences.extend(para_sents)
+
+        if not sentences:
+            return []
+
+        chunks = []
+        current_chunk = ''
+        prefix = f"[{section_title}] " if section_title else ''
+
+        for sent in sentences:
+            # 单句加入后是否超限
+            if len(current_chunk) + len(sent) <= self.chunk_size:
+                current_chunk += sent
+            else:
+                # 保存当前块
+                if current_chunk.strip():
+                    chunks.append(prefix + current_chunk.strip())
+                # 新块开始，带重叠
+                if current_chunk and self.chunk_overlap > 0:
+                    overlap_text = current_chunk[-self.chunk_overlap:]
+                    current_chunk = overlap_text + sent
+                else:
+                    current_chunk = sent
+
+                # 长句单独成块
+                while len(current_chunk) > self.chunk_size * 1.5:
+                    split_at = current_chunk.rfind('，', 0, self.chunk_size)
+                    if split_at < self.chunk_size // 2:
+                        split_at = current_chunk.rfind('；', 0, self.chunk_size)
+                    if split_at < self.chunk_size // 2:
+                        split_at = self.chunk_size
+                    chunks.append(prefix + current_chunk[:split_at].strip())
+                    current_chunk = current_chunk[max(0, split_at - self.chunk_overlap):]
+
+        if current_chunk.strip():
+            chunks.append(prefix + current_chunk.strip())
+
+        return chunks
+
+    def _split_sentences(self, text: str) -> List[str]:
+        """句子边界切分（中英文）"""
+        # 在句末标点后切分
+        pattern = r'(?<=[。！？.!?\n])(?=[^\s])'
+        parts = re.split(pattern, text)
+        # 确保标点跟在句子末尾
+        result = []
+        buffer = ''
+        for part in parts:
+            buffer += part
+            if re.search(r'[。！？.!?]$', buffer.strip()):
+                result.append(buffer)
+                buffer = ''
+        if buffer.strip():
+            result.append(buffer)
+        return result if result else [text]
 
     def get_chunk_statistics(self, document: Document) -> dict:
         """获取文档分块统计"""

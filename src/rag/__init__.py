@@ -8,11 +8,13 @@ from .vector_store import VectorStore
 from .kg_retriever import KnowledgeGraphRetriever
 from .retrieval_fusion import RetrievalFusion, SearchResult
 from .rag_service import RAGService
+from .query_rewriter import QueryRewriter
 
 __all__ = [
     'DocumentLoader', 'Document',
     'VectorStore',
     'KnowledgeGraphRetriever',
     'RetrievalFusion', 'SearchResult',
-    'RAGService'
+    'RAGService',
+    'QueryRewriter'
 ]

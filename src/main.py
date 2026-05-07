@@ -92,7 +92,8 @@ async def lifespan(app: FastAPI):
 
     # RAG 服务
     rag_service = RAGService(
-        config, milvus_manager, neo4j_manager, embedding_service
+        config, milvus_manager, neo4j_manager, embedding_service,
+        llm_client=llm_client
     )
     await rag_service.initialize()
     print(f"  [OK] 双路混合RAG服务初始化完成")
