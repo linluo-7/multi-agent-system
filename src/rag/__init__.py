@@ -9,6 +9,7 @@ from .kg_retriever import KnowledgeGraphRetriever
 from .retrieval_fusion import RetrievalFusion, SearchResult
 from .rag_service import RAGService
 from .query_rewriter import QueryRewriter
+from .visual_indexer import VisualIndexer
 
 __all__ = [
     'DocumentLoader', 'Document',
@@ -16,5 +17,6 @@ __all__ = [
     'KnowledgeGraphRetriever',
     'RetrievalFusion', 'SearchResult',
     'RAGService',
-    'QueryRewriter'
+    'QueryRewriter',
+    'VisualIndexer'
 ]

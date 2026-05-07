@@ -16,6 +16,7 @@ from .query_rewriter import QueryRewriter
 from .sparse_retriever import SparseRetriever
 from ..monitoring.rag_tracer import RAGTracer
 from .semantic_cache import SemanticCache
+from .visual_indexer import VisualIndexer
 
 
 class RAGService:
@@ -31,6 +32,8 @@ class RAGService:
         self.query_rewriter = QueryRewriter(llm_client=llm_client, config=config.get('rag', {}))
         self.tracer = RAGTracer(redis_manager=redis_manager, metrics_collector=metrics_collector)
         self.cache = SemanticCache(redis_manager=redis_manager, config=config.get('rag', {}))
+        self.visual_indexer = VisualIndexer(config=config.get('rag', {}),
+                                            milvus_manager=milvus_manager)
 
         self.loader = DocumentLoader(config.get('rag', {}))
         self.vector_store = VectorStore(
@@ -50,8 +53,10 @@ class RAGService:
     async def initialize(self):
         await self.vector_store.initialize()
         await self.kg_retriever.initialize()
+        await self.visual_indexer.initialize()
         self._initialized = True
-        print("[RAGService] Initialized successfully")
+        print(f"[RAGService] Initialized successfully "
+              f"(visual={self.visual_indexer.get_status()['model_type']})")
 
     def _get_collection(self, kb_name: str = None) -> str:
         """根据知识库名获取对应的 collection 名称"""
@@ -84,6 +89,13 @@ class RAGService:
         })
 
         await self.kg_retriever.extract_and_index(doc.id, doc.content)
+
+        # 视觉索引（如果有截图）
+        page_images = doc.metadata.get('page_images', [])
+        if page_images:
+            await self.visual_indexer.index_document(doc.id, page_images, metadata={
+                'filename': doc.filename, 'kb_name': kb_name, 'file_type': doc.file_type
+            })
 
         print(f"[RAGService] Imported document: {doc.filename} → kb={kb_name} "
               f"({len(doc.chunks)} chunks)")
@@ -196,6 +208,11 @@ class RAGService:
         trace.sparse_latency_ms = span_sp.duration_ms
         span_sp.finish(hits=len(sparse_raw))
 
+        # 视觉检索 (ColPali模式 / CLIP)
+        span_vis = trace.span('visual_search')
+        visual_raw = await self.visual_indexer.search(search_query, top_k=top_k * 2)
+        span_vis.finish(hits=len(visual_raw))
+
         vector_results = [
             SearchResult(
                 id=r.get('id', ''),
@@ -229,6 +246,16 @@ class RAGService:
                     metadata=r.get('metadata', {})
                 )
                 for r in sparse_raw
+            ],
+            'visual': [
+                SearchResult(
+                    id=r.get('id', ''),
+                    text=r.get('text', ''),
+                    score=r.get('score', 0),
+                    source='visual',
+                    metadata=r.get('metadata', {})
+                )
+                for r in visual_raw
             ]
         }
 
@@ -431,6 +458,32 @@ class RAGService:
             'refused': not has_good_results and refusal_reason is not None,
             'output_format': output_format
         }
+
+    async def answer_question_multimodal(
+        self,
+        query: str,
+        llm_client=None,
+        max_sources: int = 5,
+        kb_name: str = 'default',
+        min_confidence: float = None
+    ) -> Dict[str, Any]:
+        """多模态问答：检索 + 页面截图 + LLM生成（如LLM支持vision）"""
+        result = await self.answer_question(
+            query, llm_client=llm_client, max_sources=max_sources,
+            kb_name=kb_name, min_confidence=min_confidence
+        )
+
+        # 检测是否有视觉结果可用
+        has_visual = any(
+            r.get('source') == 'visual'
+            for r in result.get('sources', [])
+        )
+
+        result['has_visual'] = has_visual
+        # visual pages are included in sources metadata
+        # if multimodal LLM available, could re-prompt with images
+        result['multimodal_mode'] = 'text_only'
+        return result
 
     def _build_qa_system_prompt(self, output_format: str = 'markdown') -> str:
         """构建带 inline citation 和结构化输出指令的系统提示词"""

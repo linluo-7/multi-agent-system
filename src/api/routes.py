@@ -502,6 +502,34 @@ async def rag_indexer_scan():
     return {"status": "error", "message": "索引器未启动，请先调用 /indexer/start"}
 
 
+# ========== Visual (M2/M3): 视觉检索 ==========
+
+@router.get("/api/v1/rag/visual/status")
+async def rag_visual_status():
+    """视觉检索模块状态"""
+    if _rag_service and hasattr(_rag_service, 'visual_indexer'):
+        return _rag_service.visual_indexer.get_status()
+    return {'model_type': 'unavailable', 'message': '视觉索引器未就绪'}
+
+
+@router.post("/api/v1/rag/search-multimodal")
+async def rag_search_multimodal(request: dict):
+    """多模态混合检索（文本+视觉）"""
+    if _rag_service:
+        result = await _rag_service.search(
+            query=request.get("query", ""),
+            fusion_method=request.get("fusion_method", "rrf"),
+            top_k=request.get("top_k", 5),
+            kb_name=request.get("kb_name", "default")
+        )
+        # 标注结果来源
+        source_types = set(r.get('source', '') for r in result.get('results', []))
+        result['source_types'] = list(source_types)
+        result['visual_status'] = _rag_service.visual_indexer.get_status()
+        return result
+    return {"query": request.get("query", ""), "results": [], "total_found": 0}
+
+
 # ========== P5: 工程化 — 追踪 / 评估 / 缓存 / ACL / 反馈 ==========
 
 @router.get("/api/v1/rag/trace/stats")

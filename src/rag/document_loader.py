@@ -75,11 +75,58 @@ class DocumentLoader:
         return [doc for doc in results if doc is not None]
 
     async def _load_pdf(self, path: Path) -> Document:
-        """解析PDF文档（含表格提取）"""
-        content = ""
-        tables_data = []
+        """解析PDF文档 — Docling优先，PyMuPDF兜底"""
+        content, tables_data, page_images = "", [], []
+
+        # 尝试 Docling（IBM开源，MIT协议，结构化提取最优）
         try:
-            import fitz  # pymupdf
+            from docling.document_converter import DocumentConverter
+            loop = asyncio.get_event_loop()
+
+            def extract_docling():
+                converter = DocumentConverter()
+                result = converter.convert(str(path))
+                docling_doc = result.document
+                # 导出为结构化markdown（含表格）
+                md = docling_doc.export_to_markdown()
+                # 提取表格
+                _tables = []
+                for table in docling_doc.tables:
+                    if table.data:
+                        _tables.append({
+                            'caption': table.caption_text if hasattr(table, 'caption_text') else '',
+                            'rows': len(table.data.rows) if table.data.rows else 0
+                        })
+                return md, _tables
+            content, tables_data = await loop.run_in_executor(None, extract_docling)
+            if content:
+                print(f"[DocLoader] Docling parsed: {path.name} ({len(content)} chars)")
+
+                # 渲染页面截图（用于视觉检索）
+                try:
+                    page_images = await self._render_page_images(path)
+                except Exception as e:
+                    print(f"[DocLoader] Page rendering failed: {e}")
+
+                doc = self._build_document(path, content, 'pdf')
+                doc.metadata['parser'] = 'docling'
+                doc.metadata['tables_count'] = len(tables_data)
+                doc.metadata['page_images'] = page_images
+                doc.metadata['has_visual'] = len(page_images) > 0
+                return doc
+        except ImportError:
+            print(f"[DocLoader] Docling not installed, falling back to PyMuPDF")
+        except Exception as e:
+            print(f"[DocLoader] Docling failed: {e}, falling back to PyMuPDF")
+
+        # Fallback: PyMuPDF
+        return await self._load_pdf_fitz(path)
+
+    async def _load_pdf_fitz(self, path: Path) -> Document:
+        """PyMuPDF兜底解析PDF"""
+        content, tables_data = "", []
+        try:
+            import fitz
             loop = asyncio.get_event_loop()
 
             def extract():
@@ -88,13 +135,9 @@ class DocumentLoader:
                 meta = doc.metadata
                 if meta.get('title'):
                     text_parts.append(f"# {meta['title']}")
-
                 for page_num, page in enumerate(doc, 1):
-                    # 提取文本
                     page_text = page.get_text('text')
                     text_parts.append(page_text)
-
-                    # 提取表格（基于布局检测）
                     try:
                         tables = page.find_tables()
                         if tables:
@@ -102,7 +145,6 @@ class DocumentLoader:
                                 rows = table.extract()
                                 if rows:
                                     text_parts.append(f"\n[表格 {page_num}-{t_idx}]")
-                                    # 转为markdown表格
                                     headers = [str(h or '') for h in rows[0]]
                                     text_parts.append('| ' + ' | '.join(headers) + ' |')
                                     text_parts.append('| ' + ' | '.join(['---'] * len(headers)) + ' |')
@@ -111,26 +153,62 @@ class DocumentLoader:
                                         text_parts.append('| ' + ' | '.join(cells) + ' |')
                                     tables_data.append({
                                         'page': page_num,
-                                        'table_index': t_idx,
-                                        'headers': headers,
-                                        'rows': rows[1:]
+                                        'table_index': t_idx
                                     })
                     except Exception:
-                        pass  # find_tables 可能不可用
-
+                        pass
+                page_images = self._render_page_images_fitz(doc)
                 doc.close()
-                return '\n'.join(text_parts), tables_data
+                return '\n'.join(text_parts), tables_data, page_images
 
-            content, tables_data = await loop.run_in_executor(None, extract)
+            content, tables_data, page_images = await loop.run_in_executor(None, extract)
         except ImportError:
-            content = f"[PDF内容占位: {path.name}]"
+            content = f"[PDF解析不可用，请安装docling或pymupdf: {path.name}]"
         except Exception as e:
-            print(f"[DocLoader] PDF parse error: {e}")
+            print(f"[DocLoader] PyMuPDF error: {e}")
             content = f"[PDF解析错误: {path.name}]"
 
         doc = self._build_document(path, content, 'pdf')
+        doc.metadata['parser'] = 'pymupdf'
         doc.metadata['tables_count'] = len(tables_data)
+        doc.metadata['page_images'] = page_images
+        doc.metadata['has_visual'] = len(page_images) > 0
         return doc
+
+    def _render_page_images_fitz(self, doc) -> List[str]:
+        """PyMuPDF渲染页面为base64图片"""
+        images = []
+        try:
+            for page_num in range(min(len(doc), 20)):  # 最多20页
+                page = doc[page_num]
+                pix = page.get_pixmap(dpi=150)
+                import base64
+                img_b64 = base64.b64encode(pix.tobytes('png')).decode()
+                images.append(f"data:image/png;base64,{img_b64}")
+        except Exception:
+            pass
+        return images
+
+    async def _render_page_images(self, path: Path) -> List[str]:
+        """渲染PDF页面为base64图片（用于视觉检索）"""
+        import base64
+        try:
+            import fitz
+            loop = asyncio.get_event_loop()
+
+            def render():
+                imgs = []
+                doc = fitz.open(str(path))
+                for page_num in range(min(len(doc), 20)):
+                    page = doc[page_num]
+                    pix = page.get_pixmap(dpi=150)
+                    imgs.append(base64.b64encode(pix.tobytes('png')).decode())
+                doc.close()
+                return imgs
+
+            return await loop.run_in_executor(None, render)
+        except ImportError:
+            return []
 
     async def _load_word(self, path: Path) -> Document:
         """解析Word文档"""

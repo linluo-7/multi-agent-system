@@ -83,6 +83,18 @@
 
 ---
 
+## M — 多模态文档理解 (NEW)
+
+| # | 任务 | 状态 | 说明 |
+|---|------|------|------|
+| M-1 | Docling PDF解析 | ✅ | `document_loader.py`：Docling优先（MIT协议，结构化markdown+表格），PyMuPDF兜底；`_render_page_images()`页面截图 |
+| M-2 | 视觉检索模块 | ✅ | 新建 `src/rag/visual_indexer.py`：CLIP(CPU可跑)/ColQwen2(GPU可选)/感知hash三级自动切换；页面→Milvus visual collection |
+| M-3 | 多模态生成适配 | ✅ | `answer_question_multimodal()`；页面图片可在sources中引用，多模态LLM调用已预留 |
+| M-4 | 混合检索集成 | ✅ | search()新增visual第四路检索源，4路RRF融合(vector+KG+sparse+visual)；`GET /api/v1/rag/visual/status` |
+| M-5 | 零GPU可运行 | ✅ | 全链路支持CPU：CLIP ViT-B/32 (CPU) → Docling CPU模式 → 文本生成；GPU仅用于ColQwen2加速 |
+
+---
+
 ## 进度概览
 
 ```
@@ -92,8 +104,9 @@ P2 检索质量     [7/7]  █████████████████�
 P3 答案质量     [4/4]  ████████████████████  100%
 P4 前端与数据   [6/6]  ████████████████████  100%
 P5 工程化       [5/5]  ████████████████████  100%
+M  多模态       [5/5]  ████████████████████  100%
 ────────────────────────────────────────────
-总计          [30/30] ████████████████████  100%
+总计          [35/35] ████████████████████  100%
 ```
 
 ## 建议执行顺序
