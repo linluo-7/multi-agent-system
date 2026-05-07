@@ -8,6 +8,7 @@ from .search_agent import SearchAgent
 from .code_agent import CodeAgent
 from .doc_agent import DocAgent
 from .reasoning_agent import ReasoningAgent
+from .rag_agent import RAGAgent
 
 __all__ = [
     'BaseWorker',
@@ -15,5 +16,6 @@ __all__ = [
     'SearchAgent',
     'CodeAgent',
     'DocAgent',
-    'ReasoningAgent'
+    'ReasoningAgent',
+    'RAGAgent'
 ]

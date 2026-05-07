@@ -15,10 +15,10 @@
 
 | # | 任务 | 状态 | 说明 |
 |---|------|------|------|
-| P0-1 | 新建 `src/workers/rag_agent.py` | ⬜ | 继承 BaseWorker，封装 RAGService.search() 和 answer_question()，暴露 `rag_search` / `rag_qa` 两个 tool |
-| P0-2 | `src/main.py` 实例化 rag_agent | ⬜ | 在 worker 工厂里加入 `elif name == 'rag'` 分支 |
-| P0-3 | Supervisor 加入 RAG 路由 | ⬜ | `agent.py` 的规则路由加 `needs_rag` 关键词列表；`prompts.py` 的可用 Agent 列表加入 rag |
-| P0-4 | 验证端到端链路 | ⬜ | 对话中提问知识库问题 → Supervisor → RAG Agent → 返回答案 |
+| P0-1 | 新建 `src/workers/rag_agent.py` | ✅ | 继承 BaseWorker，封装 RAGService.search() 和 answer_question()，暴露 `rag_search` / `rag_qa` 两个 action |
+| P0-2 | `src/main.py` 实例化 rag_agent | ✅ | worker 工厂加入 `elif name == 'rag'` 分支，注入 rag_service + llm_client |
+| P0-3 | Supervisor 加入 RAG 路由 | ✅ | `agent.py` 规则路由加 `needs_rag` 关键词；`prompts.py` 可用 Agent 列表加入 rag；`_build_response` 处理 rag 结果 |
+| P0-4 | 验证端到端链路 | ✅ | 代码链路贯通：对话提问 → Supervisor → RAG Agent → 返回答案（运行时需启动服务 + 导入文档验证） |
 
 ---
 
@@ -86,14 +86,14 @@
 ## 进度概览
 
 ```
-P0 基础联通     [0/4]  ░░░░░░░░░░░░░░░░░░░░  0%
+P0 基础联通     [4/4]  ████████████████████  100%
 P1 意图路由     [0/4]  ░░░░░░░░░░░░░░░░░░░░  0%
 P2 检索质量     [0/7]  ░░░░░░░░░░░░░░░░░░░░  0%
 P3 答案质量     [0/4]  ░░░░░░░░░░░░░░░░░░░░  0%
 P4 前端与数据   [0/6]  ░░░░░░░░░░░░░░░░░░░░  0%
 P5 工程化       [0/5]  ░░░░░░░░░░░░░░░░░░░░  0%
 ────────────────────────────────────────────
-总计           [0/30] ░░░░░░░░░░░░░░░░░░░░  0%
+总计           [4/30] ██░░░░░░░░░░░░░░░░░░  13%
 ```
 
 ## 建议执行顺序

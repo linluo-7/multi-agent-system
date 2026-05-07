@@ -18,6 +18,7 @@ SUPERVISOR_SYSTEM_PROMPT = """你是一个多Agent协作系统的总控Agent（S
 - **search**：网络搜索Agent，负责搜索和获取信息
 - **code**：代码编写Agent，负责编写和执行代码
 - **doc**：文档生成Agent，负责生成各类文档
+- **rag**：RAG检索Agent，负责知识库文档检索和问答
 
 ## Agent协作模式
 
@@ -65,6 +66,7 @@ TASK_ANALYSIS_PROMPT = """分析以下用户需求，判断需要哪些Agent协�
 - search：搜索和获取网络信息
 - code：编写和执行代码
 - doc：生成和处理文档
+- rag：知识库文档检索和问答
 
 请分析：
 1. 这个需求的核心目标是什么？

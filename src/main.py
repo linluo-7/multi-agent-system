@@ -13,7 +13,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from storage import get_storage, get_redis, get_milvus, get_neo4j
-from workers import SearchAgent, CodeAgent, DocAgent, ReasoningAgent
+from workers import SearchAgent, CodeAgent, DocAgent, ReasoningAgent, RAGAgent
 from supervisor import SupervisorAgent
 from llm import get_llm
 from llm.embeddings import get_embedding_service
@@ -136,6 +136,9 @@ async def lifespan(app: FastAPI):
             workers[name] = CodeAgent(worker_config, redis_manager, postgres_storage)
         elif name == 'doc':
             workers[name] = DocAgent(worker_config, redis_manager, postgres_storage)
+        elif name == 'rag':
+            workers[name] = RAGAgent(worker_config, redis_manager, postgres_storage,
+                                     rag_service=rag_service, llm_client=llm_client)
 
         if name in workers:
             await workers[name].initialize()

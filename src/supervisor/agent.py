@@ -129,6 +129,7 @@ class SupervisorAgent:
 - search: 网络搜索
 - code: 代码编写和执行
 - doc: 文档生成和处理
+- rag: 知识库文档检索和问答
 - reasoning: 逻辑校验和质量评估
 
 输出格式（JSON数组）：
@@ -162,6 +163,17 @@ class SupervisorAgent:
             ['代码', '编程', '写程序', '执行', '运行', 'code', 'program', 'run', 'execute'])
         needs_doc = any(kw in user_lower for kw in
             ['文档', '报告', '生成', '导出', '写文章', 'doc', 'report', 'generate', 'write'])
+        needs_rag = any(kw in user_lower for kw in
+            ['知识库', '内部文档', '根据文档', '资料库', '合同', '手册',
+             'rag', 'knowledge base', 'internal doc', 'reference'])
+
+        if needs_rag:
+            plan.append({
+                "agent": "rag", "task_id": f"task_{tid}",
+                "task": {"type": "rag", "input": {"action": "qa", "query": user_input}},
+                "mode": "parallel"
+            })
+            tid += 1
 
         if needs_search:
             plan.append({
@@ -478,11 +490,27 @@ class SupervisorAgent:
                     response_parts.append(f"⚠ {task_id}: {result['error']}")
                     continue
 
-                if 'results' in result:
+                if 'answer' in result:
+                    answer = result.get('answer', '')
+                    sources = result.get('sources', [])
+                    response_parts.append(f"**知识库回答**：\n{answer}")
+                    if sources:
+                        source_names = [s.get('document', s.get('source', '')) for s in sources[:3]]
+                        response_parts.append(f"**参考来源**：{', '.join(source_names)}")
+                    needs_fb = result.get('needs_fallback', False)
+                    if needs_fb:
+                        response_parts.append("⚠ 知识库信息可能不足，建议补充网络搜索")
+
+                elif 'results' in result and result.get('source') != 'rag':
                     items = result.get('results', [])
                     response_parts.append(f"**搜索结果**（{len(items)}条）：")
                     for r in items[:3]:
                         response_parts.append(f"- {r.get('title', '')}: {r.get('snippet', '')[:100]}")
+
+                elif 'context' in result:
+                    ctx = result.get('context', '')
+                    total = result.get('total_found', 0)
+                    response_parts.append(f"**RAG检索结果**（{total}条匹配）：\n{ctx[:500]}")
 
                 elif 'stdout' in result:
                     response_parts.append(f"**代码执行结果**：\n```\n{result.get('stdout', '')[:500]}\n```")
