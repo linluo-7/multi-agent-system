@@ -1,0 +1,179 @@
+# Multi-Agent System Configuration
+# 多Agent协作系统配置
+
+app:
+  host: "0.0.0.0"
+  port: 5002
+  debug: false
+  log_level: "INFO"
+
+database:
+  host: "localhost"
+  port: 5432
+  name: "multi_agent_db"
+  user: "postgres"
+  password: "postgres"
+  pool_size: 10
+
+redis:
+  host: "localhost"
+  port: 6379
+  db: 0
+  password: ""
+
+tavily:
+  api_key: "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"
+  search_depth: "basic"
+
+minimax:
+  api_key: "sk-cp-KqelQLgE0ObsWZ0ZhEzFsBrknGwDaPD5ZCxWOJ8yubN5K6vtsqs1DR8f21mP2Iz4fVgGZcUZqMBHo4RQsdJG9j6CRXnrJD9zMJDlhFKPc5h0D9UaHzOicZw"
+  base_url: "https://api.minimaxi.com/anthropic"
+  model: "MiniMax-M2"
+
+storage:
+  # Redis key前缀
+  key_prefix: "mas"
+  # 对话历史保留条数
+  max_history: 50
+  # 状态TTL（秒）
+  state_ttl: 3600
+
+agents:
+  supervisor:
+    name: "supervisor"
+    model: "minimax/MiniMax-M2"
+    temperature: 0.7
+    max_retries: 3
+
+  workers:
+    - name: "search"
+      model: "minimax/MiniMax-M2"
+      temperature: 0.5
+      tools: ["web_search", "web_fetch"]
+    - name: "code"
+      model: "minimax/MiniMax-M2"
+      temperature: 0.3
+      tools: ["file_read", "file_write", "exec"]
+    - name: "doc"
+      model: "minimax/MiniMax-M2"
+      temperature: 0.6
+      tools: ["file_read", "file_write"]
+
+milvus:
+  host: "localhost"
+  port: 19530
+  collection: "multi_agent_memory"
+  dim: 1024
+
+neo4j:
+  uri: "bolt://localhost:7687"
+  user: "neo4j"
+  password: "password"
+  database: "neo4j"
+
+embedding:
+  model: "BAAI/bge-large-zh-v1.5"
+  device: "cpu"
+  batch_size: 32
+  max_length: 512
+  dim: 1024
+
+rag:
+  chunk_size: 500
+  chunk_overlap: 50
+  top_k_vector: 10
+  top_k_graph: 10
+  fusion_top_k: 5
+  rrf_k: 60
+
+memory:
+  session_ttl: 3600
+  skill_threshold: 3
+  eval_threshold: 0.6
+  max_skills: 100
+
+mcp:
+  # MCP服务器配置
+  servers:
+    - name: "filesystem"
+      command: "npx"
+      args: ["-y", "@modelcontextprotocol/server-filesystem", "/root"]
+    - name: "duckduckgo"
+      command: "npx"
+      args: ["-y", "@modelcontextprotocol/server-duckduckgo"]
+    - name: "milvus"
+      command: "python"
+      args: ["-m", "mcp_server_milvus"]
+    - name: "neo4j"
+      command: "python"
+      args: ["-m", "mcp_server_neo4j"]
+
+supervisor:
+  # 总控Agent系统提示词
+  system_prompt: |
+    你是一个多Agent协作系统的总控Agent。你的职责是：
+    1. 理解用户需求并拆解任务
+    2. 分配任务给合适的工作Agent
+    3. 收集并整合工作Agent的结果
+    4. 向用户返回最终结果
+    
+    你可以调用的工作Agent有：
+    - search: 搜索和获取网络信息
+    - code: 编写和执行代码
+    - doc: 生成和处理文档
+    
+    当用户提出需求时，先思考需要哪些Agent协作，然后按计划执行。
+
+workers:
+  search:
+    description: "网络搜索Agent，负责搜索和获取网络信息"
+    system_prompt: |
+      你是一个专业的网络搜索Agent。你的职责是：
+      1. 根据用户需求执行网络搜索
+      2. 抓取和分析网页内容
+      3. 提取关键信息并整理成结构化结果
+      
+      始终提供准确、可靠的信息来源。
+
+  code:
+    description: "代码编写Agent，负责编写、修改和执行代码"
+    system_prompt: |
+      你是一个专业的代码编写Agent。你的职责是：
+      1. 根据需求编写高质量代码
+      2. 修改和优化现有代码
+      3. 执行代码并处理结果
+      4. 编写测试用例
+      
+      代码要遵循最佳实践，保持清晰和可维护性。
+
+  doc:
+    description: "文档生成Agent，负责生成和处理各类文档"
+    system_prompt: |
+      你是一个专业的文档生成Agent。你的职责是：
+      1. 根据需求生成各类文档（Word、Markdown等）
+      2. 总结和整理信息
+      3. 格式化输出内容
+
+      文档要结构清晰、内容准确。
+
+  reasoning:
+    description: "推理校验Agent，负责逻辑推理和质量评估"
+    system_prompt: |
+      你是一个专业的推理校验Agent。你的职责是：
+      1. 对其他Agent的执行结果进行逻辑校验
+      2. 识别结果中的错误、矛盾和不完整之处
+      3. 提出修正建议和优化方向
+      4. 评估整体任务完成质量
+
+      始终以客观、严谨的态度进行分析。
+
+  rag:
+    description: "RAG检索Agent，负责文档检索和知识问答"
+    system_prompt: |
+      你是一个专业的RAG检索Agent。你的职责是：
+      1. 理解用户查询意图
+      2. 执行向量检索和知识图谱检索
+      3. 融合多路检索结果
+      4. 基于检索结果生成准确答案
+
+      始终引用检索到的来源，保证答案的可追溯性。
