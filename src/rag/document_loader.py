@@ -75,8 +75,9 @@ class DocumentLoader:
         return [doc for doc in results if doc is not None]
 
     async def _load_pdf(self, path: Path) -> Document:
-        """解析PDF文档"""
+        """解析PDF文档（含表格提取）"""
         content = ""
+        tables_data = []
         try:
             import fitz  # pymupdf
             loop = asyncio.get_event_loop()
@@ -84,19 +85,52 @@ class DocumentLoader:
             def extract():
                 text_parts = []
                 doc = fitz.open(str(path))
-                for page in doc:
-                    text_parts.append(page.get_text())
-                doc.close()
-                return '\n'.join(text_parts)
+                meta = doc.metadata
+                if meta.get('title'):
+                    text_parts.append(f"# {meta['title']}")
 
-            content = await loop.run_in_executor(None, extract)
+                for page_num, page in enumerate(doc, 1):
+                    # 提取文本
+                    page_text = page.get_text('text')
+                    text_parts.append(page_text)
+
+                    # 提取表格（基于布局检测）
+                    try:
+                        tables = page.find_tables()
+                        if tables:
+                            for t_idx, table in enumerate(tables, 1):
+                                rows = table.extract()
+                                if rows:
+                                    text_parts.append(f"\n[表格 {page_num}-{t_idx}]")
+                                    # 转为markdown表格
+                                    headers = [str(h or '') for h in rows[0]]
+                                    text_parts.append('| ' + ' | '.join(headers) + ' |')
+                                    text_parts.append('| ' + ' | '.join(['---'] * len(headers)) + ' |')
+                                    for row in rows[1:]:
+                                        cells = [str(c or '') for c in row]
+                                        text_parts.append('| ' + ' | '.join(cells) + ' |')
+                                    tables_data.append({
+                                        'page': page_num,
+                                        'table_index': t_idx,
+                                        'headers': headers,
+                                        'rows': rows[1:]
+                                    })
+                    except Exception:
+                        pass  # find_tables 可能不可用
+
+                doc.close()
+                return '\n'.join(text_parts), tables_data
+
+            content, tables_data = await loop.run_in_executor(None, extract)
         except ImportError:
-            content = f"[PDF content placeholder: {path.name}]"
+            content = f"[PDF内容占位: {path.name}]"
         except Exception as e:
             print(f"[DocLoader] PDF parse error: {e}")
-            content = f"[PDF parse error for {path.name}]"
+            content = f"[PDF解析错误: {path.name}]"
 
-        return self._build_document(path, content, 'pdf')
+        doc = self._build_document(path, content, 'pdf')
+        doc.metadata['tables_count'] = len(tables_data)
+        return doc
 
     async def _load_word(self, path: Path) -> Document:
         """解析Word文档"""
@@ -283,6 +317,56 @@ class DocumentLoader:
         if buffer.strip():
             result.append(buffer)
         return result if result else [text]
+
+    async def load_file_with_ocr(self, file_path: str, ocr_lang: str = 'chi_sim+eng') -> Optional[Document]:
+        """加载图片文件并进行OCR"""
+        path = Path(file_path)
+        if not path.exists():
+            return None
+
+        suffix = path.suffix.lower()
+        if suffix in ('.png', '.jpg', '.jpeg', '.bmp', '.tiff', '.webp'):
+            return await self._ocr_image(path, ocr_lang)
+        else:
+            return await self.load_file(file_path)
+
+    async def _ocr_image(self, path: Path, lang: str) -> Optional[Document]:
+        """OCR图片提取文字"""
+        content = ""
+        try:
+            # 尝试使用 paddleocr / easyocr / tesseract
+            try:
+                from paddleocr import PaddleOCR
+                loop = asyncio.get_event_loop()
+
+                def paddle_ocr():
+                    ocr = PaddleOCR(lang=lang, use_angle_cls=True)
+                    result = ocr.ocr(str(path))
+                    texts = []
+                    if result and result[0]:
+                        for line in result[0]:
+                            texts.append(line[1][0])
+                    return '\n'.join(texts)
+
+                content = await loop.run_in_executor(None, paddle_ocr)
+            except ImportError:
+                try:
+                    import pytesseract
+                    from PIL import Image
+                    loop = asyncio.get_event_loop()
+
+                    def tesseract_ocr():
+                        img = Image.open(str(path))
+                        return pytesseract.image_to_string(img, lang='chi_sim+eng')
+
+                    content = await loop.run_in_executor(None, tesseract_ocr)
+                except ImportError:
+                    content = f"[OCR未就绪，图片内容占位: {path.name}]"
+        except Exception as e:
+            print(f"[DocLoader] OCR error: {e}")
+            content = f"[OCR错误: {path.name}]"
+
+        return self._build_document(path, content, path.suffix.lstrip('.'))
 
     def get_chunk_statistics(self, document: Document) -> dict:
         """获取文档分块统计"""

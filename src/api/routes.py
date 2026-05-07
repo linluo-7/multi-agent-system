@@ -5,12 +5,14 @@ API路由 - FastAPI端点定义
 
 import asyncio
 import json
+import os
 import uuid
+import tempfile
 from datetime import datetime
+from pathlib import Path
 from typing import Optional, List, AsyncGenerator
-from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
-from fastapi.responses import StreamingResponse
-from fastapi.responses import HTMLResponse
+from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect, UploadFile, File, Form
+from fastapi.responses import StreamingResponse, JSONResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
 
@@ -336,6 +338,168 @@ async def rag_answer_stream(request: dict):
 async def _sse_error(message: str) -> AsyncGenerator[str, None]:
     yield f"data: {json.dumps({'type': 'error', 'message': message}, ensure_ascii=False)}\n\n"
     yield "data: [DONE]\n\n"
+
+
+# ========== P4: 文件上传 & URL导入 & 增量索引 ==========
+
+@router.post("/api/v1/rag/documents/upload")
+async def rag_upload_document(
+    file: UploadFile = File(...),
+    kb_name: str = Form("default")
+):
+    """上传文件并自动索引到知识库"""
+    if not _rag_service:
+        return {"status": "error", "message": "RAG服务未就绪"}
+
+    # 保存上传文件到临时目录
+    upload_dir = Path(tempfile.gettempdir()) / "rag_uploads"
+    upload_dir.mkdir(parents=True, exist_ok=True)
+    file_path = upload_dir / f"{uuid.uuid4().hex[:8]}_{file.filename}"
+
+    try:
+        content = await file.read()
+        with open(file_path, 'wb') as f:
+            f.write(content)
+
+        doc = await _rag_service.import_document(str(file_path), kb_name=kb_name)
+        # 清理临时文件
+        os.remove(file_path)
+
+        if doc:
+            return {"status": "ok", "document": doc.to_dict(), "kb_name": kb_name}
+        return {"status": "error", "message": f"不支持的文件格式: {file.filename}"}
+    except Exception as e:
+        if file_path.exists():
+            os.remove(file_path)
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/api/v1/rag/documents/import-url")
+async def rag_import_url(request: dict):
+    """从URL抓取并索引文档"""
+    if not _rag_service:
+        return {"status": "error", "message": "RAG服务未就绪"}
+
+    url = request.get("url", "")
+    kb_name = request.get("kb_name", "default")
+
+    if not url:
+        return {"status": "error", "message": "URL不能为空"}
+
+    try:
+        import httpx
+        async with httpx.AsyncClient(timeout=30, follow_redirects=True) as client:
+            resp = await client.get(url)
+            resp.raise_for_status()
+
+            # 保存内容到临时文件
+            url_name = url.rstrip('/').rsplit('/', 1)[-1] or 'index'
+            file_path = Path(tempfile.gettempdir()) / "rag_uploads" / f"url_{uuid.uuid4().hex[:8]}_{url_name}.html"
+            file_path.parent.mkdir(parents=True, exist_ok=True)
+
+            with open(file_path, 'w', encoding='utf-8') as f:
+                f.write(resp.text)
+
+            doc = await _rag_service.import_document(str(file_path), kb_name=kb_name)
+            os.remove(file_path)
+
+            if doc:
+                return {"status": "ok", "document": doc.to_dict(), "kb_name": kb_name,
+                        "source_url": url}
+            return {"status": "error", "message": "URL内容解析失败"}
+    except Exception as e:
+        return {"status": "error", "message": str(e)}
+
+
+@router.post("/api/v1/rag/documents/incremental-update")
+async def rag_incremental_update(request: dict):
+    """增量更新已索引的文档"""
+    if not _rag_service:
+        return {"status": "error", "message": "RAG服务未就绪"}
+
+    doc_id = request.get("doc_id", "")
+    file_path = request.get("file_path", "")
+
+    if not doc_id:
+        return {"status": "error", "message": "缺少doc_id"}
+
+    if file_path and Path(file_path).exists():
+        await _rag_service.incremental_update_document(doc_id, file_path)
+        return {"status": "ok", "message": f"文档 {doc_id} 已增量更新"}
+    return {"status": "error", "message": "文件路径无效"}
+
+
+@router.post("/api/v1/rag/documents/delete")
+async def rag_delete_document(request: dict):
+    """删除文档及其索引"""
+    if not _rag_service:
+        return {"status": "error", "message": "RAG服务未就绪"}
+
+    doc_id = request.get("doc_id", "")
+    if not doc_id:
+        return {"status": "error", "message": "缺少doc_id"}
+
+    await _rag_service.delete_document(doc_id)
+    return {"status": "ok", "message": f"文档 {doc_id} 已删除"}
+
+
+# ---- 增量索引 ----
+
+_indexer_instance = None
+
+
+@router.post("/api/v1/rag/indexer/start")
+async def rag_indexer_start(request: dict):
+    """启动增量索引器"""
+    global _indexer_instance
+    if not _rag_service:
+        return {"status": "error", "message": "RAG服务未就绪"}
+
+    from rag.indexing_pipeline import IncrementalIndexer
+    watch_dir = request.get("watch_dir", "")
+    kb_name = request.get("kb_name", "default")
+    interval = request.get("scan_interval", 60)
+
+    if not watch_dir:
+        return {"status": "error", "message": "请指定watch_dir"}
+
+    if _indexer_instance:
+        await _indexer_instance.stop()
+
+    _indexer_instance = IncrementalIndexer(
+        watch_dir=watch_dir, rag_service=_rag_service,
+        kb_name=kb_name, scan_interval=interval
+    )
+    await _indexer_instance.start()
+    return {"status": "ok", "message": f"索引器已启动: {watch_dir}"}
+
+
+@router.post("/api/v1/rag/indexer/stop")
+async def rag_indexer_stop():
+    """停止增量索引器"""
+    global _indexer_instance
+    if _indexer_instance:
+        await _indexer_instance.stop()
+        _indexer_instance = None
+        return {"status": "ok", "message": "索引器已停止"}
+    return {"status": "ok", "message": "索引器未在运行"}
+
+
+@router.get("/api/v1/rag/indexer/status")
+async def rag_indexer_status():
+    """查看索引器状态"""
+    if _indexer_instance:
+        return _indexer_instance.get_status()
+    return {"running": False, "message": "索引器未启动"}
+
+
+@router.post("/api/v1/rag/indexer/scan")
+async def rag_indexer_scan():
+    """手动触发一次增量扫描"""
+    if _indexer_instance:
+        changes = await _indexer_instance.scan_once()
+        return {"status": "ok", "changes": changes}
+    return {"status": "error", "message": "索引器未启动，请先调用 /indexer/start"}
 
 
 # ========== Memory Endpoints ==========

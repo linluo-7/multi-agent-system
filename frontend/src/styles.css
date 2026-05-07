@@ -758,3 +758,15 @@ body {
 
 /* btn-sm */
 .btn-sm { padding: 4px 8px; font-size: 11px; }
+
+/* Citation styling */
+.citation {
+  font-size: 11px;
+  color: var(--accent);
+  background: rgba(59, 130, 246, 0.15);
+  padding: 1px 4px;
+  border-radius: 3px;
+  margin: 0 1px;
+  cursor: pointer;
+  vertical-align: super;
+}

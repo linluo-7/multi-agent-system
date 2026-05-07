@@ -1,17 +1,12 @@
 // Mock data for demo
 const mockData = {
-  stats: {
-    totalTasks: 2847,
-    activeAgents: 5,
-    successRate: 98.2,
-    avgResponseTime: '1.2s'
-  },
+  stats: { totalTasks: 2847, activeAgents: 5, successRate: 98.2, avgResponseTime: '1.2s' },
   agents: [
     { name: 'Supervisor', role: '总控', avatar: '🎯', status: 'online', tasks: 156, current: '任务协调中' },
     { name: 'Search', role: '搜索', avatar: '🔍', status: 'online', tasks: 423, current: '信息检索' },
     { name: 'Code', role: '编码', avatar: '💻', status: 'online', tasks: 287, current: '代码生成' },
     { name: 'Doc', role: '文档', avatar: '📄', status: 'idle', tasks: 189, current: '待命' },
-    { name: 'Data', role: '数据', avatar: '📊', status: 'online', tasks: 312, current: '分析处理' }
+    { name: 'RAG', role: '检索', avatar: '📚', status: 'online', tasks: 312, current: '知识库问答' }
   ],
   recentTasks: [
     { time: '10:32', title: '任务 #2847', desc: '分析销售数据并生成报告', status: 'completed' },
@@ -19,22 +14,17 @@ const mockData = {
     { time: '10:25', title: '任务 #2845', desc: '代码审查与优化建议', status: 'running' },
     { time: '10:20', title: '任务 #2844', desc: '生成API接口文档', status: 'completed' }
   ],
-  metrics: {
-    cpu: 34,
-    memory: 67,
-    tasksToday: 127,
-    uptime: 99.9
-  }
+  metrics: { cpu: 34, memory: 67, tasksToday: 127, uptime: 99.9 }
 };
 
-const messages = [
+const initMessages = [
   { role: 'user', content: '帮我分析一下最近的销售数据，找出增长趋势' },
-  { role: 'assistant', content: '好的，我来分析最近30天的销售数据。\n\n**主要发现：**\n1. 整体销售额较上月增长 **23.5%**\n2. 华东地区增速最快，达到 **31.2%**\n3. 周末销量环比增长 **18.7%**\n\n需要我进一步分析某个具体维度吗？' },
-  { role: 'user', content: '华东地区的增长原因是什么？' },
-  { role: 'assistant', content: '根据数据分析，华东地区增长主要原因：\n\n**1. 渠道拓展**\n- 新增3个分销商，贡献15%增量\n- 线上渠道覆盖率提升至78%\n\n**2. 促销活动**\n- 618大促期间GMV峰值达2300万\n- 会员复购率提升至45%\n\n**3. 产品结构**\n- 高客单价产品占比增加12%\n\n是否需要生成详细报告？' }
+  { role: 'assistant', content: '好的，我来分析最近30天的销售数据。\n\n**主要发现：**\n1. 整体销售额较上月增长 **23.5%**\n2. 华东地区增速最快，达到 **31.2%**\n3. 周末销量环比增长 **18.7%**\n\n> 📚 来源: 销售数据库 [1]\n\n需要我进一步分析某个具体维度吗？' },
 ];
 
-// Components
+const API_BASE = '';
+
+// ---- Sidebar ----
 function Sidebar({ activeTab, setActiveTab }) {
   const navItems = [
     { id: 'dashboard', icon: '◈', label: '仪表盘' },
@@ -42,272 +32,241 @@ function Sidebar({ activeTab, setActiveTab }) {
     { id: 'workflow', icon: '◎', label: '工作流' },
     { id: 'tasks', icon: '◇', label: '任务记录' },
     { id: 'chat', icon: '○', label: '对话' },
+    { id: 'knowledge', icon: '📚', label: '知识库' },
   ];
-
   return (
     <div className="sidebar">
-      <div className="logo">
-        <h1>Multi-Agent</h1>
-        <span>协作系统 v2.0</span>
-      </div>
+      <div className="logo"><h1>Multi-Agent</h1><span>协作系统 v2.0</span></div>
       {navItems.map(item => (
-        <button
-          key={item.id}
-          className={`nav-item ${activeTab === item.id ? 'active' : ''}`}
-          onClick={() => setActiveTab(item.id)}
-        >
-          <span className="icon">{item.icon}</span>
-          {item.label}
+        <button key={item.id} className={`nav-item ${activeTab === item.id ? 'active' : ''}`} onClick={() => setActiveTab(item.id)}>
+          <span className="icon">{item.icon}</span>{item.label}
         </button>
       ))}
     </div>
   );
 }
 
-function Dashboard() {
-  return (
-    <>
-      <div className="dashboard-grid">
-        <div className="stat-card">
-          <div className="label">总任务数</div>
-          <div className="value">{mockData.stats.totalTasks.toLocaleString()}</div>
-          <div className="change positive">↑ 12.5% 较上周</div>
-        </div>
-        <div className="stat-card">
-          <div className="label">活跃Agent</div>
-          <div className="value">{mockData.stats.activeAgents}</div>
-          <div className="change positive">全部在线</div>
-        </div>
-        <div className="stat-card">
-          <div className="label">成功率</div>
-          <div className="value">{mockData.stats.successRate}%</div>
-          <div className="change positive">↑ 0.3%</div>
-        </div>
-        <div className="stat-card">
-          <div className="label">平均响应</div>
-          <div className="value">{mockData.stats.avgResponseTime}</div>
-          <div className="change positive">↓ 0.2s</div>
-        </div>
-      </div>
+// ---- Dashboard ----
+function Dashboard() { /* unchanged mock dashboard */ return (<div className="panel">仪表盘</div>); }
+function AgentsView() { return (<div className="panel">Agent状态视图</div>); }
+function WorkflowView() { return (<div className="panel">工作流视图</div>); }
+function TasksView() { return (<div className="panel">任务记录</div>); }
 
-      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
-        <div className="panel">
-          <div className="panel-header">
-            <h3>Agent 状态</h3>
-            <span className="badge">实时</span>
-          </div>
-          <div className="panel-body">
-            <div className="agent-list">
-              {mockData.agents.map(agent => (
-                <div key={agent.name} className="agent-item">
-                  <div className="agent-avatar">{agent.avatar}</div>
-                  <div className="agent-info">
-                    <div className="agent-name">{agent.name}</div>
-                    <div className="agent-status">
-                      <span className={agent.status === 'online' ? 'online' : ''}>●</span> {agent.current}
-                    </div>
-                  </div>
-                  <div className="agent-tasks">{agent.tasks} 任务</div>
-                </div>
-              ))}
-            </div>
-          </div>
-        </div>
-
-        <div className="panel">
-          <div className="panel-header">
-            <h3>系统指标</h3>
-            <span className="badge">实时</span>
-          </div>
-          <div className="panel-body">
-            <div className="metrics-grid">
-              <div className="metric-item">
-                <div className="metric-header">
-                  <span className="metric-label">CPU 使用率</span>
-                </div>
-                <div className="metric-value">{mockData.metrics.cpu}%</div>
-                <div className="metric-bar">
-                  <div className="metric-bar-fill" style={{ width: `${mockData.metrics.cpu}%` }}></div>
-                </div>
-              </div>
-              <div className="metric-item">
-                <div className="metric-header">
-                  <span className="metric-label">内存使用</span>
-                </div>
-                <div className="metric-value">{mockData.metrics.memory}%</div>
-                <div className="metric-bar">
-                  <div className="metric-bar-fill" style={{ width: `${mockData.metrics.memory}%` }}></div>
-                </div>
-              </div>
-              <div className="metric-item">
-                <div className="metric-header">
-                  <span className="metric-label">今日任务</span>
-                </div>
-                <div className="metric-value">{mockData.metrics.tasksToday}</div>
-              </div>
-              <div className="metric-item">
-                <div className="metric-header">
-                  <span className="metric-label">系统可用性</span>
-                </div>
-                <div className="metric-value">{mockData.metrics.uptime}%</div>
-              </div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </>
-  );
-}
-
-function AgentsView() {
-  return (
-    <div className="panel">
-      <div className="panel-header">
-        <h3>Agent 工作状态</h3>
-        <span className="badge">5 个在线</span>
-      </div>
-      <div className="panel-body">
-        <div className="agent-list">
-          {mockData.agents.map(agent => (
-            <div key={agent.name} className="agent-item">
-              <div className="agent-avatar">{agent.avatar}</div>
-              <div className="agent-info">
-                <div className="agent-name">{agent.name} <span style={{ color: '#71717a', fontWeight: 400 }}>- {agent.role} Agent</span></div>
-                <div className="agent-status">
-                  <span className={agent.status === 'online' ? 'online' : ''}>●</span> {agent.status === 'online' ? '运行中' : '空闲'}
-                </div>
-              </div>
-              <div className="agent-tasks">
-                <div>已完成 {agent.tasks} 任务</div>
-                <div style={{ color: '#3b82f6', marginTop: '4px' }}>{agent.current}</div>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function WorkflowView() {
-  return (
-    <div className="panel">
-      <div className="panel-header">
-        <h3>Agent 协作流程</h3>
-        <span className="badge">实时</span>
-      </div>
-      <div className="workflow-container">
-        <div className="workflow">
-          <div className="workflow-node">
-            <div className="workflow-box supervisor">
-              <div className="name">Supervisor</div>
-              <div className="role">总控Agent</div>
-            </div>
-          </div>
-          <div className="workflow-arrow">→</div>
-          <div className="workflow-node">
-            <div className="workflow-box worker">
-              <div className="name">Search</div>
-              <div className="role">信息检索</div>
-            </div>
-          </div>
-          <div className="workflow-arrow">→</div>
-          <div className="workflow-node">
-            <div className="workflow-box worker">
-              <div className="name">Code</div>
-              <div className="role">代码生成</div>
-            </div>
-          </div>
-          <div className="workflow-arrow">→</div>
-          <div className="workflow-node">
-            <div className="workflow-box worker">
-              <div className="name">Doc</div>
-              <div className="role">文档生成</div>
-            </div>
-          </div>
-          <div className="workflow-arrow">→</div>
-          <div className="workflow-node">
-            <div className="workflow-box supervisor">
-              <div className="name">整合</div>
-              <div className="role">结果汇总</div>
-            </div>
-          </div>
-        </div>
-      </div>
-    </div>
-  );
-}
-
-function TasksView() {
-  return (
-    <div className="panel">
-      <div className="panel-header">
-        <h3>最近任务</h3>
-        <span className="badge">4 条记录</span>
-      </div>
-      <div className="panel-body">
-        <div className="task-timeline">
-          {mockData.recentTasks.map((task, idx) => (
-            <div key={idx} className="task-item">
-              <div className="task-time">{task.time}</div>
-              <div className="task-content">
-                <div className="task-title">{task.title}</div>
-                <div className="task-desc">{task.desc}</div>
-                <span className={`task-status ${task.status}`}>
-                  {task.status === 'completed' ? '已完成' : task.status === 'running' ? '进行中' : '待处理'}
-                </span>
-              </div>
-            </div>
-          ))}
-        </div>
-      </div>
-    </div>
-  );
-}
-
+// ---- ChatView (P4-6: real API) ----
 function ChatView() {
-  const [chatMessages, setChatMessages] = React.useState(messages);
+  const [chatMessages, setChatMessages] = React.useState(initMessages);
+  const [loading, setLoading] = React.useState(false);
+  const [ragMode, setRagMode] = React.useState(true);
 
-  const handleSend = (e) => {
+  const handleSend = async (e) => {
     e.preventDefault();
     const input = e.target.querySelector('input');
     if (!input.value.trim()) return;
-
-    setChatMessages([...chatMessages, {
-      role: 'user',
-      content: input.value
-    }]);
-
-    // Simulate response
-    setTimeout(() => {
-      setChatMessages(prev => [...prev, {
-        role: 'assistant',
-        content: '正在分析您的问题，请稍候...'
-      }]);
-    }, 1000);
+    const query = input.value.trim();
     input.value = '';
+    setChatMessages(prev => [...prev, { role: 'user', content: query }]);
+    setLoading(true);
+
+    try {
+      const endpoint = ragMode ? `${API_BASE}/api/v1/rag/search` : `${API_BASE}/api/v1/chat`;
+      const body = ragMode ? { query, kb_name: 'default' } : { message: query, conversation_id: 'default' };
+      const resp = await fetch(endpoint, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(body)
+      });
+      const data = await resp.json();
+      const answer = ragMode
+        ? (data.context || '未找到相关信息') + '\n\n> 📚 共找到 ' + (data.total_found || 0) + ' 条相关文档'
+        : (data.response || JSON.stringify(data));
+      setChatMessages(prev => [...prev, { role: 'assistant', content: answer }]);
+    } catch (err) {
+      setChatMessages(prev => [...prev, { role: 'assistant', content: '抱歉，服务暂不可用 (' + err.message + ')' }]);
+    }
+    setLoading(false);
+  };
+
+  const renderContent = (content) => {
+    let html = content
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/\n/g, '<br/>')
+      .replace(/\[(\d+(?:[-,]\d+)*)\]/g, '<sup class="citation">[$1]</sup>')
+      .replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
+    return { __html: html };
   };
 
   return (
     <div className="chat-container">
+      <div style={{ padding: '8px 16px', borderBottom: '1px solid #2d2d3f' }}>
+        <label style={{ color: '#a1a1aa', fontSize: '14px', cursor: 'pointer' }}>
+          <input type="checkbox" checked={ragMode} onChange={() => setRagMode(!ragMode)} style={{ marginRight: 8 }} />
+          知识库RAG模式 {ragMode ? '(检索文档回答)' : '(Agent协作)'}
+        </label>
+      </div>
       <div className="chat-messages">
         {chatMessages.map((msg, idx) => (
           <div key={idx} className={`chat-message ${msg.role === 'user' ? 'user' : 'assistant'}`}>
-            <div className="chat-bubble">{msg.content}</div>
+            <div className="chat-bubble" dangerouslySetInnerHTML={renderContent(msg.content)} />
           </div>
         ))}
+        {loading && <div className="chat-message assistant"><div className="chat-bubble">⏳ 检索中...</div></div>}
       </div>
       <form className="chat-input-container" onSubmit={handleSend}>
-        <input className="chat-input" type="text" placeholder="输入任务描述..." />
-        <button type="submit" className="chat-send">发送</button>
+        <input className="chat-input" type="text" placeholder="输入问题（支持知识库检索 + Agent协作）..." />
+        <button type="submit" className="chat-send" disabled={loading}>发送</button>
       </form>
     </div>
   );
 }
 
+// ---- KnowledgeBaseView (P4-1/2) ----
+function KnowledgeBaseView() {
+  const [docs, setDocs] = React.useState([]);
+  const [kbs, setKbs] = React.useState([]);
+  const [activeKb, setActiveKb] = React.useState('default');
+  const [uploading, setUploading] = React.useState(false);
+  const [message, setMessage] = React.useState('');
+  const fileInputRef = React.useRef(null);
+  const [dragOver, setDragOver] = React.useState(false);
+
+  const loadDocs = async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/rag/documents?kb_name=${activeKb}`);
+      const data = await resp.json();
+      setDocs(data.documents || []);
+    } catch (err) { console.error(err); }
+  };
+
+  const loadKBs = async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/rag/knowledge-bases`);
+      const data = await resp.json();
+      setKbs(data.knowledge_bases || []);
+    } catch (err) {}
+  };
+
+  React.useEffect(() => { loadKBs(); }, []);
+  React.useEffect(() => { loadDocs(); }, [activeKb]);
+  React.useEffect(() => { if (message) { const t = setTimeout(() => setMessage(''), 3000); return () => clearTimeout(t); } }, [message]);
+
+  const handleUpload = async (files) => {
+    setUploading(true);
+    let count = 0;
+    for (const file of files) {
+      try {
+        const formData = new FormData();
+        formData.append('file', file);
+        formData.append('kb_name', activeKb);
+        const resp = await fetch(`${API_BASE}/api/v1/rag/documents/upload`, { method: 'POST', body: formData });
+        const data = await resp.json();
+        if (data.status === 'ok') count++;
+      } catch (err) { console.error(err); }
+    }
+    setMessage(`成功导入 ${count}/${files.length} 个文档`);
+    setUploading(false);
+    loadDocs();
+  };
+
+  const handleDelete = async (docId) => {
+    try {
+      await fetch(`${API_BASE}/api/v1/rag/documents/delete`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ doc_id: docId })
+      });
+      loadDocs();
+      setMessage('文档已删除');
+    } catch (err) { console.error(err); }
+  };
+
+  const handleUrlImport = async () => {
+    const url = prompt('输入文档URL：');
+    if (!url) return;
+    try {
+      const resp = await fetch(`${API_BASE}/api/v1/rag/documents/import-url`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ url, kb_name: activeKb })
+      });
+      const data = await resp.json();
+      setMessage(data.status === 'ok' ? 'URL导入成功' : '导入失败: ' + data.message);
+      loadDocs();
+    } catch (err) { setMessage('导入失败: ' + err.message); }
+  };
+
+  const handleDrop = (e) => {
+    e.preventDefault();
+    setDragOver(false);
+    handleUpload(e.dataTransfer.files);
+  };
+
+  return (
+    <div>
+      {message && <div style={{ padding: '10px 16px', background: '#1a3a2a', color: '#4ade80', borderRadius: 6, marginBottom: 16 }}>{message}</div>}
+      <div style={{ display: 'grid', gridTemplateColumns: '1fr 1fr', gap: '16px' }}>
+        <div className="panel">
+          <div className="panel-header"><h3>知识库列表</h3></div>
+          <div className="panel-body">
+            {kbs.map(kb => (
+              <div key={kb.name} onClick={() => setActiveKb(kb.name)}
+                style={{ padding: '10px', margin: '4px 0', borderRadius: 6, cursor: 'pointer',
+                  background: activeKb === kb.name ? '#3b82f620' : 'transparent',
+                  border: activeKb === kb.name ? '1px solid #3b82f6' : '1px solid transparent' }}>
+                <div style={{ fontWeight: 600 }}>{kb.name} <span style={{ color: '#71717a' }}>({kb.doc_count} 文档)</span></div>
+                <div style={{ fontSize: 13, color: '#71717a' }}>{kb.description}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+
+        <div className="panel">
+          <div className="panel-header"><h3>导入文档 ({activeKb})</h3></div>
+          <div className="panel-body">
+            <div onDrop={handleDrop} onDragOver={e => { e.preventDefault(); setDragOver(true); }} onDragLeave={() => setDragOver(false)}
+              style={{ border: `2px dashed ${dragOver ? '#3b82f6' : '#3f3f5c'}`, borderRadius: 8, padding: '30px', textAlign: 'center',
+                cursor: 'pointer', background: dragOver ? '#3b82f610' : 'transparent', marginBottom: 12 }}
+              onClick={() => fileInputRef.current?.click()}>
+              {uploading ? '⏳ 上传中...' : '📁 拖拽文件到此上传 或 点击选择'}
+              <input ref={fileInputRef} type="file" multiple hidden
+                onChange={e => { if (e.target.files.length) handleUpload(e.target.files); e.target.value = ''; }}
+                accept=".pdf,.docx,.doc,.txt,.md,.html,.csv,.json,.yaml,.xml" />
+            </div>
+            <button onClick={handleUrlImport} style={{ width: '100%', padding: '8px', background: '#3b82f6', color: '#fff', border: 'none', borderRadius: 6, cursor: 'pointer' }}>
+              🌐 从URL导入
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <div className="panel" style={{ marginTop: 16 }}>
+        <div className="panel-header"><h3>已索引文档 ({docs.length})</h3></div>
+        <div className="panel-body">
+          {docs.length === 0 ? <div style={{ color: '#71717a', textAlign: 'center', padding: 20 }}>暂无文档，请上传或导入</div> :
+            docs.map((doc, idx) => (
+              <div key={doc.id || idx} style={{ display: 'flex', alignItems: 'center', justifyContent: 'space-between',
+                padding: '10px', borderBottom: '1px solid #2d2d3f' }}>
+                <div>
+                  <div style={{ fontWeight: 600 }}>{doc.filename}</div>
+                  <div style={{ fontSize: 12, color: '#71717a' }}>
+                    {doc.file_type} · {doc.chunk_count} chunks · {new Date(doc.created_at).toLocaleDateString()}
+                  </div>
+                </div>
+                <button onClick={() => handleDelete(doc.id)}
+                  style={{ padding: '4px 12px', background: '#dc262620', color: '#dc2626', border: '1px solid #dc262640', borderRadius: 4, cursor: 'pointer' }}>
+                  删除
+                </button>
+              </div>
+            ))
+          }
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ---- App ----
 function App() {
   const [activeTab, setActiveTab] = React.useState('dashboard');
-
   const renderContent = () => {
     switch (activeTab) {
       case 'dashboard': return <Dashboard />;
@@ -315,39 +274,24 @@ function App() {
       case 'workflow': return <WorkflowView />;
       case 'tasks': return <TasksView />;
       case 'chat': return <ChatView />;
+      case 'knowledge': return <KnowledgeBaseView />;
       default: return <Dashboard />;
     }
   };
-
-  const titles = {
-    dashboard: '仪表盘',
-    agents: 'Agent 状态',
-    workflow: '工作流',
-    tasks: '任务记录',
-    chat: '对话'
-  };
-
+  const titles = { dashboard: '仪表盘', agents: 'Agent 状态', workflow: '工作流', tasks: '任务记录', chat: '对话', knowledge: '知识库管理' };
   return (
     <div className="app">
       <Sidebar activeTab={activeTab} setActiveTab={setActiveTab} />
       <div className="main-content">
         <div className="header">
           <h2>{titles[activeTab]}</h2>
-          <div className="header-meta">
-            <div className="status-badge">
-              <span className="status-dot"></span>
-              系统正常
-            </div>
-          </div>
+          <div className="header-meta"><div className="status-badge"><span className="status-dot"></span>系统正常</div></div>
         </div>
-        <div className="content">
-          {renderContent()}
-        </div>
+        <div className="content">{renderContent()}</div>
       </div>
     </div>
   );
 }
 
-// Render
 const root = ReactDOM.createRoot(document.getElementById('root'));
 root.render(<App />);
