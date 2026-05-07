@@ -4,10 +4,12 @@ API路由 - FastAPI端点定义
 """
 
 import asyncio
+import json
 import uuid
 from datetime import datetime
-from typing import Optional, List
+from typing import Optional, List, AsyncGenerator
 from fastapi import APIRouter, HTTPException, WebSocket, WebSocketDisconnect
+from fastapi.responses import StreamingResponse
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 from sse_starlette.sse import EventSourceResponse
@@ -302,6 +304,38 @@ async def rag_import_document(file_path: str = None, kb_name: str = "default"):
             return {"status": "ok", "document": doc.to_dict()}
         return {"status": "error", "message": "文档导入失败"}
     return {"status": "ok", "message": "文档导入接口已就绪"}
+
+
+@router.post("/api/v1/rag/answer/stream")
+async def rag_answer_stream(request: dict):
+    """RAG流式问答（SSE）"""
+    if not _rag_service:
+        return StreamingResponse(
+            _sse_error("RAG服务未就绪"),
+            media_type="text/event-stream"
+        )
+
+    async def event_generator() -> AsyncGenerator[str, None]:
+        async for event in _rag_service.stream_answer(
+            query=request.get("query", ""),
+            llm_client=getattr(_rag_service, 'llm', None),
+            max_sources=request.get("max_sources", 5),
+            kb_name=request.get("kb_name", "default"),
+            min_confidence=request.get("min_confidence")
+        ):
+            yield f"data: {json.dumps(event, ensure_ascii=False)}\n\n"
+        yield "data: [DONE]\n\n"
+
+    return StreamingResponse(
+        event_generator(),
+        media_type="text/event-stream",
+        headers={"Cache-Control": "no-cache", "X-Accel-Buffering": "no"}
+    )
+
+
+async def _sse_error(message: str) -> AsyncGenerator[str, None]:
+    yield f"data: {json.dumps({'type': 'error', 'message': message}, ensure_ascii=False)}\n\n"
+    yield "data: [DONE]\n\n"
 
 
 # ========== Memory Endpoints ==========

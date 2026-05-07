@@ -340,56 +340,256 @@ class RAGService:
         query: str,
         llm_client=None,
         max_sources: int = 5,
-        kb_name: str = 'default'
+        kb_name: str = 'default',
+        output_format: str = 'markdown',
+        min_confidence: float = None
     ) -> Dict[str, Any]:
-        """端到端问答：检索 + LLM生成答案"""
+        """端到端问答：检索 + LLM生成答案（支持 inline citation、拒答降级、结构化输出）"""
         search_result = await self.search(query, top_k=max_sources, kb_name=kb_name)
+        threshold = min_confidence or self.config.get('rag', {}).get('min_score', 0.5)
+
+        results = search_result.get('results', [])
+        has_good_results = any(r.get('score', 0) >= threshold for r in results)
 
         answer = None
-        if llm_client:
+        refusal_reason = None
+
+        # 拒答判断
+        if not has_good_results:
+            refusal_reason = self._build_refusal(search_result, threshold)
+
+        if not refusal_reason and llm_client:
             try:
-                system_prompt = """你是一个专业的文档问答助手。请基于提供的参考文档回答用户问题。
-
-要求：
-1. 严格基于参考文档内容回答，不要编造信息
-2. 如果参考文档不足以回答问题，明确告知用户
-3. 引用具体文档来源
-4. 回答简洁准确"""
-
-                user_prompt = f"""参考文档：
-{search_result['context']}
-
-用户问题：{query}
-
-请基于以上参考文档回答问题。"""
+                system_prompt = self._build_qa_system_prompt(output_format)
+                user_prompt = self._build_qa_user_prompt(query, search_result, output_format)
 
                 answer = await llm_client.ainvoke([
                     {"role": "system", "content": system_prompt},
                     {"role": "user", "content": user_prompt}
                 ], temperature=0.3)
+
+                # 后处理：验证引用标注
+                answer = self._postprocess_citations(answer, search_result)
             except Exception as e:
                 print(f"[RAGService] LLM answer generation failed: {e}")
 
         if answer is None:
-            answer = self._build_fallback_answer(search_result)
+            if refusal_reason:
+                answer = refusal_reason
+            else:
+                answer = self._build_fallback_answer(search_result)
 
         return {
             'query': query,
             'answer': answer,
             'sources': search_result['sources'][:max_sources],
-            'total_docs_searched': search_result['total_found']
+            'total_docs_searched': search_result['total_found'],
+            'confidence': self._estimate_confidence(results, threshold),
+            'refused': not has_good_results and refusal_reason is not None,
+            'output_format': output_format
+        }
+
+    def _build_qa_system_prompt(self, output_format: str = 'markdown') -> str:
+        """构建带 inline citation 和结构化输出指令的系统提示词"""
+        base = """你是专业的文档问答助手。严格基于参考文档回答用户问题。
+
+核心规则：
+1. 严格基于参考文档，不得编造
+2. 每个关键事实必须标注来源编号，格式：[1] [2]
+3. 如果文档信息不足，明确说明"文档中未找到相关信息"
+4. 引用时使用方括号编号对应下方来源列表"""
+
+        format_instructions = {
+            'markdown': """\n输出格式：Markdown
+- 使用标题、列表、加粗等组织答案
+- 引用格式：[1]、[2-3]
+- 末尾列出"📚 参考来源"编号列表""",
+
+            'table': """\n输出格式：优先使用Markdown表格
+- 数据对比类问题 → 表格呈现
+- 每条数据标注引用编号""",
+
+            'json': """\n输出格式：JSON
+{
+  "answer": "回答内容的markdown文本",
+  "confidence": 0.85,
+  "citations": [{"id": 1, "source": "文档名", "excerpt": "引用原文片段"}],
+  "key_points": ["要点1", "要点2"]
+}""",
+        }
+
+        return base + format_instructions.get(output_format, format_instructions['markdown'])
+
+    def _build_qa_user_prompt(self, query: str, search_result: dict, output_format: str) -> str:
+        """构建带编号来源的用户提示词"""
+        sources = search_result.get('sources', [])
+        context = search_result.get('context', '')
+
+        # 构建带编号的来源列表
+        numbered_sources = []
+        for i, src in enumerate(sources, 1):
+            doc_name = src.get('document', src.get('source', '未知'))
+            preview = src.get('preview', '')[:100]
+            numbered_sources.append(f"[{i}] {doc_name}: {preview}")
+
+        sources_text = '\n'.join(numbered_sources) if numbered_sources else '无参考文档'
+
+        prompt = f"""📄 参考文档：
+{context}
+
+📖 来源列表（答案中用 [编号] 引用）：
+{sources_text}
+
+❓ 用户问题：{query}
+
+请基于以上参考文档和来源列表回答问题。每个关键事实后面标注来源编号。"""
+        return prompt
+
+    def _postprocess_citations(self, answer: str, search_result: dict) -> str:
+        """后处理：确保引用格式正确，补充缺失的引用"""
+        import re
+        sources = search_result.get('sources', [])
+        if not sources:
+            return answer
+
+        # 检查是否有引用标注
+        has_citations = bool(re.search(r'\[\d+(?:[-,]\d+)*\]', answer))
+        if not has_citations and sources:
+            # 追加来源列表
+            source_lines = ['\n\n📚 **参考来源**：']
+            for i, src in enumerate(sources, 1):
+                doc = src.get('document', src.get('source', '未知'))
+                score = src.get('score', 0)
+                source_lines.append(f"> [{i}] {doc} （相关度: {score:.0%}）")
+            answer += '\n'.join(source_lines)
+        return answer
+
+    def _build_refusal(self, search_result: dict, threshold: float) -> str:
+        """构建拒答回复"""
+        results = search_result.get('results', [])
+        kb_name = search_result.get('kb_name', '默认知识库')
+
+        if not results:
+            return (
+                f"抱歉，未在 **{kb_name}** 中找到与您问题相关的文档信息。\n\n"
+                f"建议：\n"
+                f"- 尝试使用不同的关键词重新提问\n"
+                f"- 确认文档已导入到正确的知识库\n"
+                f"- 如需网络搜索，可使用搜索功能补充信息"
+            )
+
+        best_score = max(r.get('score', 0) for r in results)
+        return (
+            f"⚠️ 知识库中相关文档的匹配度较低（最高相关度 {best_score:.0%}，阈值 {threshold:.0%}）。\n\n"
+            f"以下是可能相关的信息，请谨慎参考：\n\n"
+            f"{self._build_fallback_answer(search_result)}\n\n"
+            f"💡 建议尝试网络搜索获取更准确的信息。"
+        )
+
+    def _estimate_confidence(self, results: List[Dict], threshold: float) -> Dict[str, Any]:
+        """估算答案置信度"""
+        if not results:
+            return {'level': 'none', 'score': 0.0, 'recommendation': 'refuse'}
+
+        scores = [r.get('score', 0) for r in results]
+        avg_score = sum(scores) / len(scores) if scores else 0
+        max_score = max(scores) if scores else 0
+
+        if max_score >= 0.8:
+            level, rec = 'high', 'answer'
+        elif max_score >= threshold:
+            level, rec = 'medium', 'answer_with_caveat'
+        elif avg_score >= threshold * 0.6:
+            level, rec = 'low', 'answer_with_disclaimer'
+        else:
+            level, rec = 'insufficient', 'refuse_or_fallback'
+
+        return {
+            'level': level,
+            'score': round(avg_score, 3),
+            'max_score': round(max_score, 3),
+            'recommendation': rec,
+            'above_threshold': max_score >= threshold
         }
 
     def _build_fallback_answer(self, search_result: dict) -> str:
-        """无LLM时的回退答案构建"""
+        """无LLM时的回退答案构建（带引用）"""
         results = search_result.get('results', [])
+        sources = search_result.get('sources', [])
         if not results:
             return "抱歉，未找到与您问题相关的文档信息。"
 
-        answer_parts = ["根据知识库检索，找到以下相关信息：\n"]
+        lines = ["根据知识库检索，找到以下相关信息：\n"]
         for i, r in enumerate(results[:3], 1):
-            answer_parts.append(f"{i}. {r['text'][:200]}... （相关度: {r['score']:.2f}）")
-        return '\n'.join(answer_parts)
+            src_info = ''
+            if i <= len(sources):
+                doc = sources[i - 1].get('document', sources[i - 1].get('source', ''))
+                if doc:
+                    src_info = f" 📖 {doc}"
+            lines.append(f"{i}. {r['text'][:300]}...\n   （相关度: {r['score']:.0%}{src_info}）")
+        return '\n'.join(lines)
+
+    async def stream_answer(
+        self,
+        query: str,
+        llm_client=None,
+        max_sources: int = 5,
+        kb_name: str = 'default',
+        min_confidence: float = None
+    ):
+        """流式问答：SSE 逐token返回答案"""
+        search_result = await self.search(query, top_k=max_sources, kb_name=kb_name)
+        threshold = min_confidence or self.config.get('rag', {}).get('min_score', 0.5)
+        results = search_result.get('results', [])
+        has_good = any(r.get('score', 0) >= threshold for r in results)
+
+        # 发送搜索元数据
+        yield {
+            'type': 'search_complete',
+            'total_found': search_result['total_found'],
+            'sources': search_result.get('sources', [])[:max_sources],
+            'confidence': self._estimate_confidence(results, threshold)
+        }
+
+        if not has_good:
+            refusal = self._build_refusal(search_result, threshold)
+            yield {'type': 'chunk', 'content': refusal}
+            yield {'type': 'complete', 'refused': True}
+            return
+
+        if not llm_client:
+            answer = self._build_fallback_answer(search_result)
+            yield {'type': 'chunk', 'content': answer}
+            yield {'type': 'complete', 'refused': False}
+            return
+
+        system_prompt = self._build_qa_system_prompt('markdown')
+        user_prompt = self._build_qa_user_prompt(query, search_result, 'markdown')
+
+        try:
+            full_answer = ''
+            async for chunk in llm_client.astream([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ]):
+                content = chunk if isinstance(chunk, str) else chunk.get('content', '')
+                if content:
+                    full_answer += content
+                    yield {'type': 'chunk', 'content': content}
+
+            full_answer = self._postprocess_citations(full_answer, search_result)
+            yield {'type': 'complete', 'refused': False, 'full_answer': full_answer}
+        except AttributeError:
+            # LLM client 不支持 streaming，fallback
+            answer = await llm_client.ainvoke([
+                {"role": "system", "content": system_prompt},
+                {"role": "user", "content": user_prompt}
+            ], temperature=0.3)
+            yield {'type': 'chunk', 'content': answer}
+            yield {'type': 'complete', 'refused': False, 'full_answer': answer}
+        except Exception as e:
+            print(f"[RAGService] Stream failed: {e}")
+            yield {'type': 'error', 'message': str(e)}
 
     async def incremental_update_document(self, doc_id: str, file_path: str):
         """文档增量更新"""
